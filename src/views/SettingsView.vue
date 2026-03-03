@@ -11,12 +11,12 @@ const autostart = ref(false);
 async function saveSettings() {
   try {
     await invoke("set_settings", {
-      paused,
+      paused: paused.value,
       sampleIntervalSeconds: 10,
       idleThresholdSeconds: 120,
-      trackWindowTitles,
-      trackInput,
-      autostart,
+      trackWindowTitles: trackWindowTitles.value,
+      trackInput: trackInput.value,
+      autostart: autostart.value,
     });
   } catch (error) {
     console.error("Failed to save settings:", error);

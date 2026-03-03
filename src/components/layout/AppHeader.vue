@@ -46,7 +46,7 @@ onUnmounted(() => {
         </svg>
         <h1 class="logo-text dbru-text-lg dbru-text-main">Worka</h1>
       </div>
-      <DbrBadge variant="primary" :label="badgeText" />
+      <DbrBadge :variant="isPaused ? undefined : 'primary'" :label="badgeText" />
     </div>
   </header>
 </template>

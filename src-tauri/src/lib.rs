@@ -9,12 +9,21 @@ use tauri::{
 };
 use chrono::Datelike;
 use windows::Win32::{
-    System::SystemInformation::GetTickCount64,
+    Foundation::CloseHandle,
+    System::{
+        SystemInformation::GetTickCount64,
+        Threading::{
+            OpenProcess, QueryFullProcessImageNameW,
+            PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        },
+    },
     UI::{
         Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO},
         WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId},
     },
 };
+
+// ─── State structs ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppState {
@@ -39,30 +48,12 @@ impl Default for AppState {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ActivitySample {
-    pub timestamp: i64,
-    pub app_id: i64,
-    pub is_idle: bool,
-    pub window_title: Option<String>,
-}
+/// Shared SQLite connection — wrapped in Mutex so it can be moved between threads.
+pub struct AppDb(pub Mutex<Connection>);
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct InputSample {
-    pub timestamp_bucket: i64,
-    pub keyboard_presses: u32,
-    pub mouse_clicks: u32,
-    pub mouse_wheel: u32,
-}
+// ─── Windows helpers ──────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AppInfo {
-    pub id: i64,
-    pub exe_path: String,
-    pub display_name: String,
-}
-
-// Получение времени простоя в секундах
+/// Seconds since last keyboard/mouse input.
 fn get_idle_time() -> u64 {
     unsafe {
         let mut last_input = LASTINPUTINFO {
@@ -71,14 +62,15 @@ fn get_idle_time() -> u64 {
         };
         if GetLastInputInfo(&mut last_input).as_bool() {
             let now = GetTickCount64();
-            ((now - last_input.dwTime as u64) / 1000) as u64
+            (now.saturating_sub(last_input.dwTime as u64)) / 1000
         } else {
             0
         }
     }
 }
 
-// Получение активного окна и процесса
+/// Returns (exe_full_path, window_title) for the currently focused window.
+/// Returns None if the foreground window can't be resolved.
 fn get_active_window_info() -> Option<(String, String)> {
     unsafe {
         let hwnd = GetForegroundWindow();
@@ -89,84 +81,160 @@ fn get_active_window_info() -> Option<(String, String)> {
         let mut process_id: u32 = 0;
         GetWindowThreadProcessId(hwnd, Some(&mut process_id));
 
-        // Получение имени процесса (упрощённо)
-        let _process_name = format!("process_{}.exe", process_id);
+        // Resolve the real executable path.
+        let process_handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id).ok()?;
+        let mut name_buf = [0u16; 1024];
+        let mut name_len = name_buf.len() as u32;
+        let query_result = QueryFullProcessImageNameW(
+            process_handle,
+            PROCESS_NAME_WIN32,
+            windows::core::PWSTR(name_buf.as_mut_ptr()),
+            &mut name_len,
+        );
+        let _ = CloseHandle(process_handle);
+        query_result.ok()?;
+        let exe_path = String::from_utf16_lossy(&name_buf[..name_len as usize]).to_string();
 
-        // Получение заголовка окна
+        // Window title.
         let mut title_buf = [0u16; 512];
         let len = GetWindowTextW(hwnd, &mut title_buf);
-        let title = String::from_utf16_lossy(&title_buf[..len as usize]);
+        let title = String::from_utf16_lossy(&title_buf[..len as usize]).to_string();
 
-        Some((_process_name, title))
+        Some((exe_path, title))
     }
 }
 
-// Инициализация базы данных
-fn init_db() -> Result<Connection> {
-    let conn = Connection::open("worka.db")?;
+// ─── Database ─────────────────────────────────────────────────────────────────
 
-    conn.execute(
+fn init_db(path: impl AsRef<std::path::Path>) -> Result<Connection> {
+    let conn = Connection::open(path)?;
+
+    conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS app (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            exe_path TEXT UNIQUE NOT NULL,
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            exe_path     TEXT UNIQUE NOT NULL,
             display_name TEXT NOT NULL
-        )",
-        [],
-    )?;
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS activity_sample (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp INTEGER NOT NULL,
-            app_id INTEGER NOT NULL,
-            is_idle INTEGER NOT NULL,
+        );
+        CREATE TABLE IF NOT EXISTS activity_sample (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp    INTEGER NOT NULL,
+            app_id       INTEGER NOT NULL,
+            is_idle      INTEGER NOT NULL,
             window_title TEXT
-        )",
-        [],
-    )?;
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS input_sample (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp_bucket INTEGER NOT NULL,
-            keyboard_presses INTEGER NOT NULL,
-            mouse_clicks INTEGER NOT NULL,
-            mouse_wheel INTEGER NOT NULL
-        )",
-        [],
-    )?;
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS settings (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            sample_interval_seconds INTEGER NOT NULL DEFAULT 10,
-            idle_threshold_seconds INTEGER NOT NULL DEFAULT 120,
-            track_window_titles INTEGER NOT NULL DEFAULT 1,
-            track_input INTEGER NOT NULL DEFAULT 1,
-            autostart INTEGER NOT NULL DEFAULT 0,
-            paused INTEGER NOT NULL DEFAULT 0
-        )",
-        [],
-    )?;
-
-    // Инициализация настроек по умолчанию
-    conn.execute(
-        "INSERT OR IGNORE INTO settings (id, sample_interval_seconds, idle_threshold_seconds, track_window_titles, track_input, autostart, paused)
-         VALUES (1, 10, 120, 1, 1, 0, 0)",
-        [],
+        );
+        CREATE TABLE IF NOT EXISTS input_sample (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp_bucket  INTEGER NOT NULL,
+            keyboard_presses  INTEGER NOT NULL,
+            mouse_clicks      INTEGER NOT NULL,
+            mouse_wheel       INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS settings (
+            id                       INTEGER PRIMARY KEY CHECK (id = 1),
+            sample_interval_seconds  INTEGER NOT NULL DEFAULT 10,
+            idle_threshold_seconds   INTEGER NOT NULL DEFAULT 120,
+            track_window_titles      INTEGER NOT NULL DEFAULT 1,
+            track_input              INTEGER NOT NULL DEFAULT 1,
+            autostart                INTEGER NOT NULL DEFAULT 0,
+            paused                   INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT OR IGNORE INTO settings
+            (id, sample_interval_seconds, idle_threshold_seconds,
+             track_window_titles, track_input, autostart, paused)
+        VALUES (1, 10, 120, 1, 1, 0, 0);"
     )?;
 
     Ok(conn)
 }
 
+/// Load AppState from the settings table.  Falls back to Default on any error.
+fn load_settings_from_db(conn: &Connection) -> AppState {
+    conn.query_row(
+        "SELECT paused, sample_interval_seconds, idle_threshold_seconds,
+                track_window_titles, track_input, autostart
+         FROM settings WHERE id = 1",
+        [],
+        |row| {
+            Ok(AppState {
+                paused:                  row.get::<_, bool>(0)?,
+                sample_interval_seconds: row.get::<_, i64>(1)? as u64,
+                idle_threshold_seconds:  row.get::<_, i64>(2)? as u64,
+                track_window_titles:     row.get::<_, bool>(3)?,
+                track_input:             row.get::<_, bool>(4)?,
+                autostart:               row.get::<_, bool>(5)?,
+            })
+        },
+    )
+    .unwrap_or_default()
+}
+
+// ─── Background sampler ───────────────────────────────────────────────────────
+
+/// Insert one activity sample into the DB.
+fn sample_activity_inner(state: &AppState, conn: &Connection) -> Result<()> {
+    if state.paused {
+        return Ok(());
+    }
+
+    let Some((exe_path, window_title)) = get_active_window_info() else {
+        return Ok(());
+    };
+
+    let idle_time = get_idle_time();
+    let is_idle = idle_time >= state.idle_threshold_seconds;
+
+    let display_name = std::path::Path::new(&exe_path)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or(&exe_path)
+        .to_string();
+
+    let app_id: i64 = {
+        let mut stmt = conn.prepare("SELECT id FROM app WHERE exe_path = ?1")?;
+        match stmt.query_row([&exe_path], |row| row.get(0)) {
+            Ok(id) => id,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                conn.execute(
+                    "INSERT INTO app (exe_path, display_name) VALUES (?1, ?2)",
+                    [&exe_path, &display_name],
+                )?;
+                conn.last_insert_rowid()
+            }
+            Err(e) => return Err(e),
+        }
+    };
+
+    let title = if state.track_window_titles {
+        Some(window_title)
+    } else {
+        None
+    };
+
+    conn.execute(
+        "INSERT INTO activity_sample (timestamp, app_id, is_idle, window_title)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![
+            chrono::Utc::now().timestamp(),
+            app_id,
+            if is_idle { 1i32 } else { 0i32 },
+            title,
+        ],
+    )?;
+
+    Ok(())
+}
+
+// ─── Tauri commands ───────────────────────────────────────────────────────────
+
 #[tauri::command]
-fn get_settings(state: tauri::State<AppState>) -> AppState {
-    state.inner().clone()
+fn get_settings(state: tauri::State<Mutex<AppState>>) -> AppState {
+    state.inner().lock().unwrap().clone()
 }
 
 #[tauri::command]
 fn set_settings(
     state: tauri::State<Mutex<AppState>>,
+    db: tauri::State<AppDb>,
     paused: bool,
     sample_interval_seconds: u64,
     idle_threshold_seconds: u64,
@@ -174,90 +242,78 @@ fn set_settings(
     track_input: bool,
     autostart: bool,
 ) {
-    let mut inner = state.inner().lock().unwrap();
-    inner.paused = paused;
-    inner.sample_interval_seconds = sample_interval_seconds;
-    inner.idle_threshold_seconds = idle_threshold_seconds;
-    inner.track_window_titles = track_window_titles;
-    inner.track_input = track_input;
-    inner.autostart = autostart;
+    // Update in-memory state.
+    {
+        let mut inner = state.inner().lock().unwrap();
+        inner.paused = paused;
+        inner.sample_interval_seconds = sample_interval_seconds;
+        inner.idle_threshold_seconds = idle_threshold_seconds;
+        inner.track_window_titles = track_window_titles;
+        inner.track_input = track_input;
+        inner.autostart = autostart;
+    } // state lock released before acquiring db lock
+
+    // Persist to DB.
+    let conn = db.0.lock().unwrap();
+    let _ = conn.execute(
+        "UPDATE settings SET paused = ?1, sample_interval_seconds = ?2,
+         idle_threshold_seconds = ?3, track_window_titles = ?4,
+         track_input = ?5, autostart = ?6
+         WHERE id = 1",
+        params![
+            paused,
+            sample_interval_seconds as i64,
+            idle_threshold_seconds as i64,
+            track_window_titles,
+            track_input,
+            autostart,
+        ],
+    );
 }
 
 #[tauri::command]
-fn sample_activity(state: tauri::State<Mutex<AppState>>) -> Option<ActivitySample> {
-    let inner = state.inner().lock().unwrap();
-    if inner.paused {
-        return None;
-    }
-
-    let (_process_name, window_title) = get_active_window_info()?;
-    let idle_time = get_idle_time();
-    let is_idle = idle_time >= inner.idle_threshold_seconds;
-
-    Some(ActivitySample {
-        timestamp: chrono::Utc::now().timestamp(),
-        app_id: 1,
-        is_idle,
-        window_title: if inner.track_window_titles {
-            Some(window_title)
-        } else {
-            None
-        },
-    })
-}
-
-#[tauri::command]
-fn get_today_summary() -> serde_json::Value {
-    use rusqlite::Connection;
-
-    let conn = match Connection::open("worka.db") {
-        Ok(c) => c,
-        Err(_) => {
-            return serde_json::json!({
-                "active_time_seconds": 0,
-                "idle_time_seconds": 0,
-                "keyboard_presses": 0,
-                "mouse_clicks": 0,
-                "top_apps": []
-            });
-        }
+fn get_today_summary(
+    db: tauri::State<AppDb>,
+    state: tauri::State<Mutex<AppState>>,
+) -> serde_json::Value {
+    // Read interval without holding state lock during DB queries.
+    let interval = {
+        state.inner().lock().unwrap().sample_interval_seconds as i64
     };
 
-    let now = chrono::Utc::now();
-    let start_of_day = chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), now.day())
-        .unwrap()
-        .and_hms_opt(0, 0, 0)
-        .unwrap()
-        .and_utc()
-        .timestamp();
+    let conn = db.0.lock().unwrap();
+
+    let start_of_day = {
+        let now = chrono::Utc::now();
+        chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), now.day())
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp()
+    };
 
     let active_time: i64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(
-                CASE WHEN is_idle = 0 THEN 1 ELSE 0 END
-            ), 0) * 10 as seconds
-             FROM activity_sample
-             WHERE timestamp >= ?1",
-            [&start_of_day],
+            "SELECT COALESCE(SUM(CASE WHEN is_idle = 0 THEN 1 ELSE 0 END), 0) * ?2
+             FROM activity_sample WHERE timestamp >= ?1",
+            params![start_of_day, interval],
             |row| row.get(0),
         )
         .unwrap_or(0);
 
     let idle_time: i64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(
-                CASE WHEN is_idle = 1 THEN 1 ELSE 0 END
-            ), 0) * 10 as seconds
-             FROM activity_sample
-             WHERE timestamp >= ?1",
-            [&start_of_day],
+            "SELECT COALESCE(SUM(CASE WHEN is_idle = 1 THEN 1 ELSE 0 END), 0) * ?2
+             FROM activity_sample WHERE timestamp >= ?1",
+            params![start_of_day, interval],
             |row| row.get(0),
         )
         .unwrap_or(0);
 
     let mut stmt = conn
         .prepare(
-            "SELECT a.display_name, COUNT(*) * 10 as seconds
+            "SELECT a.display_name, COUNT(*) * ?2 as seconds
              FROM activity_sample s
              JOIN app a ON s.app_id = a.id
              WHERE s.timestamp >= ?1 AND s.is_idle = 0
@@ -267,51 +323,59 @@ fn get_today_summary() -> serde_json::Value {
         )
         .unwrap();
 
-    let top_apps: Vec<serde_json::Value> = stmt
-        .query_map([&start_of_day], |row| {
-            let name: String = row.get(0)?;
-            let seconds: i64 = row.get(1)?;
-            Ok((name, seconds))
+    let raw_apps: Vec<(String, i64)> = stmt
+        .query_map(params![start_of_day, interval], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })
         .unwrap()
         .filter_map(|r| r.ok())
+        .collect();
+
+    let total_active = active_time.max(1);
+    let top_apps: Vec<serde_json::Value> = raw_apps
+        .into_iter()
         .map(|(name, seconds)| {
+            let percentage = (seconds * 100 / total_active) as u32;
             serde_json::json!({
                 "name": name,
                 "time_seconds": seconds,
-                "percentage": 0
+                "percentage": percentage
             })
         })
         .collect();
 
     serde_json::json!({
         "active_time_seconds": active_time,
-        "idle_time_seconds": idle_time,
-        "keyboard_presses": 0,
-        "mouse_clicks": 0,
-        "top_apps": top_apps
+        "idle_time_seconds":   idle_time,
+        "keyboard_presses":    0,
+        "mouse_clicks":        0,
+        "top_apps":            top_apps
     })
 }
 
 #[tauri::command]
 fn get_week_summary() -> serde_json::Value {
-    serde_json::json!({
-        "days": []
-    })
+    serde_json::json!({ "days": [] })
 }
 
 #[tauri::command]
 fn get_timeline(_date: String) -> serde_json::Value {
-    serde_json::json!({
-        "segments": []
-    })
+    serde_json::json!({ "segments": [] })
 }
 
 #[tauri::command]
-fn toggle_pause(state: tauri::State<Mutex<AppState>>) -> bool {
-    let mut inner = state.inner().lock().unwrap();
-    inner.paused = !inner.paused;
-    inner.paused
+fn toggle_pause(state: tauri::State<Mutex<AppState>>, db: tauri::State<AppDb>) -> bool {
+    let new_paused = {
+        let mut inner = state.inner().lock().unwrap();
+        inner.paused = !inner.paused;
+        inner.paused
+    };
+    let conn = db.0.lock().unwrap();
+    let _ = conn.execute(
+        "UPDATE settings SET paused = ?1 WHERE id = 1",
+        [new_paused],
+    );
+    new_paused
 }
 
 #[tauri::command]
@@ -319,14 +383,17 @@ fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
+// ─── App entry point ──────────────────────────────────────────────────────────
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // AppState is managed as Mutex<AppState>; actual values are loaded from
+        // DB in setup() below and replaced via app.manage().
         .manage(Mutex::new(AppState::default()))
         .invoke_handler(tauri::generate_handler![
             get_settings,
             set_settings,
-            sample_activity,
             get_today_summary,
             get_week_summary,
             get_timeline,
@@ -334,51 +401,83 @@ pub fn run() {
             quit_app
         ])
         .setup(|app| {
-            let _conn = init_db().expect("Failed to initialize database");
+            // ── Stable DB path ────────────────────────────────────────────────
+            let data_dir = app.path().app_data_dir()
+                .expect("Failed to resolve app data directory");
+            std::fs::create_dir_all(&data_dir)
+                .expect("Failed to create app data directory");
+            let db_path = data_dir.join("worka.db");
 
+            let conn = init_db(&db_path).expect("Failed to initialize database");
+
+            // ── Load persisted settings ───────────────────────────────────────
+            let saved_state = load_settings_from_db(&conn);
+            // Replace the default AppState with the one loaded from DB.
+            *app.state::<Mutex<AppState>>().lock().unwrap() = saved_state;
+
+            app.manage(AppDb(Mutex::new(conn)));
+
+            // ── Stop flag for background thread ───────────────────────────────
             let should_stop = Arc::new(AtomicBool::new(false));
             app.manage(should_stop.clone());
 
+            // ── Tray menu ─────────────────────────────────────────────────────
             let handle = app.handle();
             let show = MenuItem::with_id(handle, "show", "Открыть", true, None::<&str>)?;
             let quit = MenuItem::with_id(handle, "quit", "Выйти", true, None::<&str>)?;
-
             let menu = Menu::with_items(handle, &[&show, &quit])?;
 
-            let _tray = TrayIconBuilder::new()
+            TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
                         if let Some(window) = app.get_webview_window("main") {
-                            window.show().unwrap();
-                            window.set_focus().unwrap();
+                            let _ = window.show();
+                            let _ = window.set_focus();
                         }
                     }
                     "quit" => {
-                        let stop_flag = app.state::<Arc<AtomicBool>>();
-                        stop_flag.store(true, Ordering::Relaxed);
+                        app.state::<Arc<AtomicBool>>().store(true, Ordering::Relaxed);
                         app.exit(0);
                     }
                     _ => {}
                 })
                 .build(app)?;
 
+            // ── Background sampler thread ─────────────────────────────────────
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
+                // Use the configured interval; start with the default so we
+                // always have a valid duration even before the first iteration.
+                let mut interval = app_handle
+                    .state::<Mutex<AppState>>()
+                    .lock()
+                    .unwrap()
+                    .sample_interval_seconds;
+
                 loop {
-                    std::thread::sleep(Duration::from_secs(10));
-                    
-                    let stop_flag = app_handle.state::<Arc<AtomicBool>>();
-                    if stop_flag.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_secs(interval));
+
+                    if app_handle.state::<Arc<AtomicBool>>().load(Ordering::Relaxed) {
                         break;
                     }
-                    
-                    let state = app_handle.state::<Mutex<AppState>>();
-                    let inner = state.lock().unwrap();
-                    if !inner.paused {
-                        let _ = sample_activity_inner(&inner);
+
+                    // Clone AppState so we hold the lock for the shortest time
+                    // possible and never hold it during DB I/O.
+                    let app_state = app_handle
+                        .state::<Mutex<AppState>>()
+                        .lock()
+                        .unwrap()
+                        .clone();
+
+                    interval = app_state.sample_interval_seconds;
+
+                    if !app_state.paused {
+                        let db = app_handle.state::<AppDb>();
+                        let conn = db.0.lock().unwrap();
+                        let _ = sample_activity_inner(&app_state, &conn);
                     }
                 }
             });
@@ -386,14 +485,14 @@ pub fn run() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error while running tauri application")
+        .expect("error while building tauri application")
         .run(|app_handle, event| {
             if let RunEvent::WindowEvent { label, event, .. } = event {
                 if label == "main" {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
                         if let Some(window) = app_handle.get_webview_window("main") {
-                            window.hide().unwrap();
+                            let _ = window.hide();
                         }
                     }
                 }
@@ -401,45 +500,7 @@ pub fn run() {
         });
 }
 
-fn sample_activity_inner(state: &AppState) -> Result<()> {
-    if state.paused {
-        return Ok(());
-    }
-
-    let conn = Connection::open("worka.db")?;
-
-    if let Some((process_name, window_title)) = get_active_window_info() {
-        let idle_time = get_idle_time();
-        let is_idle = idle_time >= state.idle_threshold_seconds;
-
-        let app_id: i64 = {
-            let mut stmt = conn.prepare("SELECT id FROM app WHERE exe_path = ?1")?;
-            match stmt.query_row([&process_name], |row| row.get(0)) {
-                Ok(id) => id,
-                Err(rusqlite::Error::QueryReturnedNoRows) => {
-                    conn.execute(
-                        "INSERT INTO app (exe_path, display_name) VALUES (?1, ?2)",
-                        [&process_name, &process_name],
-                    )?;
-                    conn.last_insert_rowid()
-                }
-                Err(e) => return Err(e),
-            }
-        };
-
-        conn.execute(
-            "INSERT INTO activity_sample (timestamp, app_id, is_idle, window_title) VALUES (?1, ?2, ?3, ?4)",
-            params![
-                chrono::Utc::now().timestamp(),
-                app_id,
-                if is_idle { 1 } else { 0 },
-                window_title,
-            ],
-        )?;
-    }
-
-    Ok(())
-}
+// ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -464,79 +525,80 @@ mod tests {
     }
 
     #[test]
-    fn should_init_db_creates_tables() {
-        let conn = Connection::open(":memory:").unwrap();
-        
-        conn.execute(
-            "CREATE TABLE app (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                exe_path TEXT UNIQUE NOT NULL,
-                display_name TEXT NOT NULL
-            )",
-            [],
-        ).unwrap();
-
-        let mut stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type='table'").unwrap();
+    fn should_init_db_creates_all_tables() {
+        let conn = init_db(":memory:").unwrap();
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .unwrap();
         let table_names: Vec<String> = stmt
             .query_map([], |row| row.get(0))
             .unwrap()
             .filter_map(|r| r.ok())
             .collect();
-
         assert!(table_names.contains(&"app".to_string()));
+        assert!(table_names.contains(&"activity_sample".to_string()));
+        assert!(table_names.contains(&"input_sample".to_string()));
+        assert!(table_names.contains(&"settings".to_string()));
+    }
+
+    #[test]
+    fn should_load_settings_from_db_returns_defaults() {
+        let conn = init_db(":memory:").unwrap();
+        let state = load_settings_from_db(&conn);
+        assert!(!state.paused);
+        assert_eq!(state.sample_interval_seconds, 10);
+        assert_eq!(state.idle_threshold_seconds, 120);
     }
 
     #[test]
     fn should_toggle_pause_changes_state() {
         let state = Mutex::new(AppState::default());
-        
-        {
-            let inner = state.lock().unwrap();
-            assert!(!inner.paused);
-        }
-
-        {
-            let mut inner = state.lock().unwrap();
-            inner.paused = !inner.paused;
-        }
-
-        {
-            let inner = state.lock().unwrap();
-            assert!(inner.paused);
-        }
+        assert!(!state.lock().unwrap().paused);
+        state.lock().unwrap().paused = true;
+        assert!(state.lock().unwrap().paused);
     }
 
     #[test]
-    fn should_get_idle_time_returns_non_negative() {
-        let idle_time = get_idle_time();
-        assert!(idle_time >= 0);
+    fn should_get_idle_time_does_not_panic() {
+        let _ = get_idle_time();
     }
 
     #[test]
     fn should_get_active_window_info_does_not_panic() {
-        let result = std::panic::catch_unwind(|| {
-            get_active_window_info()
-        });
-        
+        let result = std::panic::catch_unwind(get_active_window_info);
         assert!(result.is_ok());
     }
 
     #[test]
-    fn should_today_summary_return_valid_json() {
-        let summary = get_today_summary();
-        assert!(summary.get("active_time_seconds").is_some());
-        assert!(summary.get("top_apps").is_some());
+    fn should_activity_sample_insert_and_query_works() {
+        let conn = init_db(":memory:").unwrap();
+        conn.execute(
+            "INSERT INTO app (exe_path, display_name) VALUES ('test.exe', 'Test')",
+            [],
+        )
+        .unwrap();
+        let app_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO activity_sample (timestamp, app_id, is_idle, window_title)
+             VALUES (?1, ?2, 0, NULL)",
+            params![chrono::Utc::now().timestamp(), app_id],
+        )
+        .unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM activity_sample WHERE is_idle = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]
     fn should_chrono_datelike_works_correctly() {
         let now = chrono::Utc::now();
-        let year = now.year();
-        let month = now.month();
-        let day = now.day();
-
-        assert!(year >= 2024);
-        assert!(month >= 1 && month <= 12);
-        assert!(day >= 1 && day <= 31);
+        assert!(now.year() >= 2024);
+        assert!((1..=12).contains(&now.month()));
+        assert!((1..=31).contains(&now.day()));
     }
 }
