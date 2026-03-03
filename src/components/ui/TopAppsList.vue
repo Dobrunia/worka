@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { formatTime } from "@/utils/time";
+
 export interface AppUsage {
   name: string;
   timeSeconds: number;
@@ -8,15 +10,6 @@ export interface AppUsage {
 defineProps<{
   apps?: AppUsage[];
 }>();
-
-function formatTime(seconds: number): string {
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  if (hours > 0) {
-    return `${hours}ч ${minutes}м`;
-  }
-  return `${minutes}м`;
-}
 </script>
 
 <template>

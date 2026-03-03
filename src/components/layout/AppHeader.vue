@@ -1,34 +1,14 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from "vue";
+import { computed } from "vue";
 import { DbrBadge } from "dobruniaui-vue";
-import { invoke } from "@tauri-apps/api/core";
 
-const isPaused = ref(false);
+const props = defineProps<{
+  isPaused: boolean;
+}>();
 
-async function loadStatus() {
-  try {
-    const settings: { paused: boolean } = await invoke("get_settings");
-    isPaused.value = settings.paused;
-  } catch (error) {
-    console.error("Failed to load status:", error);
-  }
-}
-
-const badgeText = computed(() => isPaused.value ? 'На паузе' : 'Трекинг активен');
-
-// Обновляем статус каждые 3 секунды
-let pollInterval: ReturnType<typeof setInterval> | null = null;
-
-onMounted(() => {
-  loadStatus();
-  pollInterval = setInterval(loadStatus, 3000);
-});
-
-onUnmounted(() => {
-  if (pollInterval) {
-    clearInterval(pollInterval);
-  }
-});
+const badgeText = computed(() =>
+  props.isPaused ? "На паузе" : "Трекинг активен"
+);
 </script>
 
 <template>
@@ -46,7 +26,11 @@ onUnmounted(() => {
         </svg>
         <h1 class="logo-text dbru-text-lg dbru-text-main">Worka</h1>
       </div>
-      <DbrBadge :variant="isPaused ? undefined : 'primary'" :label="badgeText" />
+      <DbrBadge
+        :variant="isPaused ? undefined : 'primary'"
+        :label="badgeText"
+        data-testid="status-badge"
+      />
     </div>
   </header>
 </template>

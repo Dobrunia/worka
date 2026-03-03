@@ -1,5 +1,6 @@
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { formatTime } from "@/utils/time";
 
 export interface TodaySummary {
   active_time_seconds: number;
@@ -7,9 +8,10 @@ export interface TodaySummary {
   keyboard_presses: number;
   mouse_clicks: number;
   top_apps: Array<{ name: string; time_seconds: number; percentage: number }>;
+  is_paused: boolean;
 }
 
-export interface AppState {
+export interface AppSettings {
   paused: boolean;
   sample_interval_seconds: number;
   idle_threshold_seconds: number;
@@ -18,75 +20,62 @@ export interface AppState {
   autostart: boolean;
 }
 
-export async function getTodaySummary(): Promise<TodaySummary> {
-  return await invoke("get_today_summary");
+// ─── Singleton state ──────────────────────────────────────────────────────────
+// Module-level refs shared across all component instances.
+// App.vue owns the polling lifecycle via startPolling / stopPolling.
+
+const summary = ref<TodaySummary>({
+  active_time_seconds: 0,
+  idle_time_seconds: 0,
+  keyboard_presses: 0,
+  mouse_clicks: 0,
+  top_apps: [],
+  is_paused: false,
+});
+
+const isPaused = ref(false);
+const isLoading = ref(false);
+
+let pollHandle: ReturnType<typeof setInterval> | null = null;
+
+// ─── Actions ──────────────────────────────────────────────────────────────────
+
+async function loadSummary(): Promise<void> {
+  isLoading.value = true;
+  try {
+    const data: TodaySummary = await invoke("get_today_summary");
+    summary.value = data;
+    isPaused.value = data.is_paused;
+  } catch (error) {
+    console.error("Failed to load summary:", error);
+  } finally {
+    isLoading.value = false;
+  }
 }
 
-export async function getSettings(): Promise<AppState> {
-  return await invoke("get_settings");
+function startPolling(intervalMs = 5000): void {
+  if (pollHandle !== null) return; // already running
+  loadSummary();
+  pollHandle = setInterval(loadSummary, intervalMs);
 }
 
-export async function togglePause(): Promise<boolean> {
-  return await invoke("toggle_pause");
+function stopPolling(): void {
+  if (pollHandle !== null) {
+    clearInterval(pollHandle);
+    pollHandle = null;
+  }
 }
+
+// ─── Composable ───────────────────────────────────────────────────────────────
 
 export function useTodayData() {
-  const summary = ref<TodaySummary>({
-    active_time_seconds: 0,
-    idle_time_seconds: 0,
-    keyboard_presses: 0,
-    mouse_clicks: 0,
-    top_apps: [],
-  });
-
-  const isPaused = ref(false);
-  const isLoading = ref(false);
-
-  async function loadSummary() {
-    isLoading.value = true;
-    try {
-      const data = await getTodaySummary();
-      summary.value = data;
-    } catch (error) {
-      console.error("Failed to load summary:", error);
-    } finally {
-      isLoading.value = false;
-    }
-  }
-
-  async function loadSettings() {
-    try {
-      const settings = await getSettings();
-      isPaused.value = settings.paused;
-    } catch (error) {
-      console.error("Failed to load settings:", error);
-    }
-  }
-
-  async function togglePauseState() {
-    try {
-      isPaused.value = await togglePause();
-    } catch (error) {
-      console.error("Failed to toggle pause:", error);
-    }
-  }
-
-  function formatTime(seconds: number): string {
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    if (hours > 0) {
-      return `${hours}ч ${minutes}м`;
-    }
-    return `${minutes}м`;
-  }
-
   return {
     summary,
     isPaused,
     isLoading,
     loadSummary,
-    loadSettings,
-    togglePauseState,
+    startPolling,
+    stopPolling,
     formatTime,
   };
 }

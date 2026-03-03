@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import AppHeader from "@/components/layout/AppHeader.vue";
 import AppNavigation from "@/components/layout/AppNavigation.vue";
 import AppFooter from "@/components/layout/AppFooter.vue";
@@ -7,6 +7,7 @@ import TodayView from "@/views/TodayView.vue";
 import WeekView from "@/views/WeekView.vue";
 import TimelineView from "@/views/TimelineView.vue";
 import SettingsView from "@/views/SettingsView.vue";
+import { useTodayData } from "@/composables/useTodayData";
 
 const activeTab = ref("today");
 
@@ -17,37 +18,36 @@ const tabs = [
   { id: "settings", label: "Настройки" },
 ];
 
-const isTracking = computed(() => activeTab.value !== "settings");
-
 const currentView = computed(() => {
   switch (activeTab.value) {
-    case "today":
-      return TodayView;
-    case "week":
-      return WeekView;
-    case "timeline":
-      return TimelineView;
-    case "settings":
-      return SettingsView;
-    default:
-      return TodayView;
+    case "today": return TodayView;
+    case "week": return WeekView;
+    case "timeline": return TimelineView;
+    case "settings": return SettingsView;
+    default: return TodayView;
   }
 });
+
+// Polling lifecycle is owned here so it runs regardless of active tab.
+const { isPaused, startPolling, stopPolling } = useTodayData();
+
+onMounted(() => startPolling());
+onUnmounted(() => stopPolling());
 </script>
 
 <template>
   <div class="app-container dbru-bg">
-    <AppHeader :is-tracking="isTracking" />
-    
+    <AppHeader :is-paused="isPaused" />
+
     <AppNavigation
       v-model:active-tab="activeTab"
       :tabs="tabs"
     />
-    
+
     <main class="content dbru-surface">
       <component :is="currentView" />
     </main>
-    
+
     <AppFooter />
   </div>
 </template>

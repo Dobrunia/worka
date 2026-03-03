@@ -27,7 +27,8 @@ fn init_single_instance() -> bool {
         .collect();
 
     unsafe {
-        let handle = CreateMutexW(None, true, windows::core::PCWSTR(mutex_name.as_ptr()));
+        // bInitialOwner = false: mutex is a sentinel only, we don't need to own it.
+        let handle = CreateMutexW(None, false, windows::core::PCWSTR(mutex_name.as_ptr()));
         if handle.is_ok() {
             let last_error = GetLastError();
             if last_error == ERROR_ALREADY_EXISTS {

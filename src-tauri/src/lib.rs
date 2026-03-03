@@ -1,6 +1,9 @@
 use rusqlite::{Connection, Result, params};
 use serde::{Deserialize, Serialize};
-use std::sync::{Mutex, Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    Arc, Mutex, OnceLock,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
 use std::time::Duration;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -9,7 +12,7 @@ use tauri::{
 };
 use chrono::Datelike;
 use windows::Win32::{
-    Foundation::CloseHandle,
+    Foundation::{CloseHandle, LPARAM, LRESULT, WPARAM},
     System::{
         SystemInformation::GetTickCount64,
         Threading::{
@@ -19,7 +22,13 @@ use windows::Win32::{
     },
     UI::{
         Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO},
-        WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId},
+        WindowsAndMessaging::{
+            CallNextHookEx, GetForegroundWindow, GetMessageW, GetWindowTextW,
+            GetWindowThreadProcessId, SetWindowsHookExW, UnhookWindowsHookEx,
+            MSG, WH_KEYBOARD_LL, WH_MOUSE_LL,
+            WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN,
+            WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_SYSKEYDOWN,
+        },
     },
 };
 
@@ -51,6 +60,63 @@ impl Default for AppState {
 /// Shared SQLite connection — wrapped in Mutex so it can be moved between threads.
 pub struct AppDb(pub Mutex<Connection>);
 
+// ─── Input counters ───────────────────────────────────────────────────────────
+
+/// Accumulated input event counts between sampler flushes.
+/// AtomicU64 allows lock-free increments from the hook thread.
+pub struct InputCounters {
+    pub keyboard: AtomicU64,
+    pub mouse_clicks: AtomicU64,
+    pub mouse_wheel: AtomicU64,
+}
+
+/// Global static so that `extern "system"` hook callbacks can access the counters
+/// without any locks or allocations in the hot path.
+static INPUT_COUNTERS: OnceLock<Arc<InputCounters>> = OnceLock::new();
+
+// ─── Windows hook callbacks ───────────────────────────────────────────────────
+
+/// Low-level keyboard hook: counts key-down events only (not key-up).
+unsafe extern "system" fn keyboard_hook_proc(
+    code: i32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if code >= 0 {
+        let msg = wparam.0 as u32;
+        if msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN {
+            if let Some(c) = INPUT_COUNTERS.get() {
+                c.keyboard.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+    CallNextHookEx(None, code, wparam, lparam)
+}
+
+/// Low-level mouse hook: counts button-down clicks and wheel ticks.
+unsafe extern "system" fn mouse_hook_proc(
+    code: i32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if code >= 0 {
+        match wparam.0 as u32 {
+            WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => {
+                if let Some(c) = INPUT_COUNTERS.get() {
+                    c.mouse_clicks.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            WM_MOUSEWHEEL => {
+                if let Some(c) = INPUT_COUNTERS.get() {
+                    c.mouse_wheel.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            _ => {}
+        }
+    }
+    CallNextHookEx(None, code, wparam, lparam)
+}
+
 // ─── Windows helpers ──────────────────────────────────────────────────────────
 
 /// Seconds since last keyboard/mouse input.
@@ -70,7 +136,6 @@ fn get_idle_time() -> u64 {
 }
 
 /// Returns (exe_full_path, window_title) for the currently focused window.
-/// Returns None if the foreground window can't be resolved.
 fn get_active_window_info() -> Option<(String, String)> {
     unsafe {
         let hwnd = GetForegroundWindow();
@@ -81,8 +146,8 @@ fn get_active_window_info() -> Option<(String, String)> {
         let mut process_id: u32 = 0;
         GetWindowThreadProcessId(hwnd, Some(&mut process_id));
 
-        // Resolve the real executable path.
-        let process_handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id).ok()?;
+        let process_handle =
+            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id).ok()?;
         let mut name_buf = [0u16; 1024];
         let mut name_len = name_buf.len() as u32;
         let query_result = QueryFullProcessImageNameW(
@@ -95,7 +160,6 @@ fn get_active_window_info() -> Option<(String, String)> {
         query_result.ok()?;
         let exe_path = String::from_utf16_lossy(&name_buf[..name_len as usize]).to_string();
 
-        // Window title.
         let mut title_buf = [0u16; 512];
         let len = GetWindowTextW(hwnd, &mut title_buf);
         let title = String::from_utf16_lossy(&title_buf[..len as usize]).to_string();
@@ -108,6 +172,10 @@ fn get_active_window_info() -> Option<(String, String)> {
 
 fn init_db(path: impl AsRef<std::path::Path>) -> Result<Connection> {
     let conn = Connection::open(path)?;
+
+    // WAL mode: readers never block writers, writers never block readers.
+    // synchronous=NORMAL is crash-safe with WAL and faster than FULL.
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
 
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS app (
@@ -141,13 +209,12 @@ fn init_db(path: impl AsRef<std::path::Path>) -> Result<Connection> {
         INSERT OR IGNORE INTO settings
             (id, sample_interval_seconds, idle_threshold_seconds,
              track_window_titles, track_input, autostart, paused)
-        VALUES (1, 10, 120, 1, 1, 0, 0);"
+        VALUES (1, 10, 120, 1, 1, 0, 0);",
     )?;
 
     Ok(conn)
 }
 
-/// Load AppState from the settings table.  Falls back to Default on any error.
 fn load_settings_from_db(conn: &Connection) -> AppState {
     conn.query_row(
         "SELECT paused, sample_interval_seconds, idle_threshold_seconds,
@@ -170,7 +237,6 @@ fn load_settings_from_db(conn: &Connection) -> AppState {
 
 // ─── Background sampler ───────────────────────────────────────────────────────
 
-/// Insert one activity sample into the DB.
 fn sample_activity_inner(state: &AppState, conn: &Connection) -> Result<()> {
     if state.paused {
         return Ok(());
@@ -190,7 +256,8 @@ fn sample_activity_inner(state: &AppState, conn: &Connection) -> Result<()> {
         .to_string();
 
     let app_id: i64 = {
-        let mut stmt = conn.prepare("SELECT id FROM app WHERE exe_path = ?1")?;
+        // prepare_cached reuses the compiled statement across calls.
+        let mut stmt = conn.prepare_cached("SELECT id FROM app WHERE exe_path = ?1")?;
         match stmt.query_row([&exe_path], |row| row.get(0)) {
             Ok(id) => id,
             Err(rusqlite::Error::QueryReturnedNoRows) => {
@@ -242,7 +309,6 @@ fn set_settings(
     track_input: bool,
     autostart: bool,
 ) {
-    // Update in-memory state.
     {
         let mut inner = state.inner().lock().unwrap();
         inner.paused = paused;
@@ -251,9 +317,8 @@ fn set_settings(
         inner.track_window_titles = track_window_titles;
         inner.track_input = track_input;
         inner.autostart = autostart;
-    } // state lock released before acquiring db lock
+    }
 
-    // Persist to DB.
     let conn = db.0.lock().unwrap();
     let _ = conn.execute(
         "UPDATE settings SET paused = ?1, sample_interval_seconds = ?2,
@@ -275,10 +340,11 @@ fn set_settings(
 fn get_today_summary(
     db: tauri::State<AppDb>,
     state: tauri::State<Mutex<AppState>>,
-) -> serde_json::Value {
-    // Read interval without holding state lock during DB queries.
-    let interval = {
-        state.inner().lock().unwrap().sample_interval_seconds as i64
+) -> Result<serde_json::Value, String> {
+    // Release state lock before acquiring the DB lock to avoid any lock-order issues.
+    let (interval, is_paused) = {
+        let s = state.inner().lock().unwrap();
+        (s.sample_interval_seconds as i64, s.paused)
     };
 
     let conn = db.0.lock().unwrap();
@@ -293,26 +359,20 @@ fn get_today_summary(
             .timestamp()
     };
 
-    let active_time: i64 = conn
+    // Single pass for both active and idle totals.
+    let (active_time, idle_time): (i64, i64) = conn
         .query_row(
-            "SELECT COALESCE(SUM(CASE WHEN is_idle = 0 THEN 1 ELSE 0 END), 0) * ?2
+            "SELECT
+               COALESCE(SUM(CASE WHEN is_idle = 0 THEN 1 ELSE 0 END), 0) * ?2,
+               COALESCE(SUM(CASE WHEN is_idle = 1 THEN 1 ELSE 0 END), 0) * ?2
              FROM activity_sample WHERE timestamp >= ?1",
             params![start_of_day, interval],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .unwrap_or(0);
-
-    let idle_time: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(CASE WHEN is_idle = 1 THEN 1 ELSE 0 END), 0) * ?2
-             FROM activity_sample WHERE timestamp >= ?1",
-            params![start_of_day, interval],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
+        .map_err(|e| e.to_string())?;
 
     let mut stmt = conn
-        .prepare(
+        .prepare_cached(
             "SELECT a.display_name, COUNT(*) * ?2 as seconds
              FROM activity_sample s
              JOIN app a ON s.app_id = a.id
@@ -321,15 +381,24 @@ fn get_today_summary(
              ORDER BY seconds DESC
              LIMIT 5",
         )
-        .unwrap();
+        .map_err(|e| e.to_string())?;
 
     let raw_apps: Vec<(String, i64)> = stmt
         .query_map(params![start_of_day, interval], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })
-        .unwrap()
+        .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
+
+    let (keyboard_total, mouse_total): (i64, i64) = conn
+        .query_row(
+            "SELECT COALESCE(SUM(keyboard_presses), 0), COALESCE(SUM(mouse_clicks), 0)
+             FROM input_sample WHERE timestamp_bucket >= ?1",
+            params![start_of_day],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap_or((0, 0));
 
     let total_active = active_time.max(1);
     let top_apps: Vec<serde_json::Value> = raw_apps
@@ -344,13 +413,14 @@ fn get_today_summary(
         })
         .collect();
 
-    serde_json::json!({
+    Ok(serde_json::json!({
         "active_time_seconds": active_time,
         "idle_time_seconds":   idle_time,
-        "keyboard_presses":    0,
-        "mouse_clicks":        0,
-        "top_apps":            top_apps
-    })
+        "keyboard_presses":    keyboard_total,
+        "mouse_clicks":        mouse_total,
+        "top_apps":            top_apps,
+        "is_paused":           is_paused
+    }))
 }
 
 #[tauri::command]
@@ -388,8 +458,6 @@ fn quit_app(app: tauri::AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        // AppState is managed as Mutex<AppState>; actual values are loaded from
-        // DB in setup() below and replaced via app.manage().
         .manage(Mutex::new(AppState::default()))
         .invoke_handler(tauri::generate_handler![
             get_settings,
@@ -402,7 +470,9 @@ pub fn run() {
         ])
         .setup(|app| {
             // ── Stable DB path ────────────────────────────────────────────────
-            let data_dir = app.path().app_data_dir()
+            let data_dir = app
+                .path()
+                .app_data_dir()
                 .expect("Failed to resolve app data directory");
             std::fs::create_dir_all(&data_dir)
                 .expect("Failed to create app data directory");
@@ -412,12 +482,23 @@ pub fn run() {
 
             // ── Load persisted settings ───────────────────────────────────────
             let saved_state = load_settings_from_db(&conn);
-            // Replace the default AppState with the one loaded from DB.
             *app.state::<Mutex<AppState>>().lock().unwrap() = saved_state;
 
             app.manage(AppDb(Mutex::new(conn)));
 
-            // ── Stop flag for background thread ───────────────────────────────
+            // ── Input counters ────────────────────────────────────────────────
+            // Counters live in RAM; hooks only do fetch_add (no IO, no locks).
+            // The sampler thread swaps them to 0 and writes one DB row per interval.
+            let input_counters = Arc::new(InputCounters {
+                keyboard: AtomicU64::new(0),
+                mouse_clicks: AtomicU64::new(0),
+                mouse_wheel: AtomicU64::new(0),
+            });
+            // Set global static BEFORE spawning the hook thread.
+            INPUT_COUNTERS.set(input_counters.clone()).ok();
+            app.manage(input_counters);
+
+            // ── Stop flag for sampler thread ──────────────────────────────────
             let should_stop = Arc::new(AtomicBool::new(false));
             app.manage(should_stop.clone());
 
@@ -446,11 +527,46 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            // ── Input hook thread ─────────────────────────────────────────────
+            // Low-level LL hooks are called on the installing thread via its
+            // message pump. Callbacks only increment atomics — zero allocations,
+            // zero locks, zero DB writes in the hot path.
+            std::thread::spawn(|| unsafe {
+                let kb_hook =
+                    match SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook_proc), None, 0) {
+                        Ok(h) => h,
+                        Err(e) => {
+                            eprintln!("Failed to install keyboard hook: {e:?}");
+                            return;
+                        }
+                    };
+
+                let ms_hook =
+                    match SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), None, 0) {
+                        Ok(h) => h,
+                        Err(e) => {
+                            eprintln!("Failed to install mouse hook: {e:?}");
+                            let _ = UnhookWindowsHookEx(kb_hook);
+                            return;
+                        }
+                    };
+
+                // Message pump — required for LL hooks to receive events.
+                let mut msg = MSG::default();
+                loop {
+                    let ret = GetMessageW(&mut msg, None, 0, 0);
+                    if ret.0 <= 0 {
+                        break; // 0 = WM_QUIT, -1 = error
+                    }
+                }
+
+                let _ = UnhookWindowsHookEx(kb_hook);
+                let _ = UnhookWindowsHookEx(ms_hook);
+            });
+
             // ── Background sampler thread ─────────────────────────────────────
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
-                // Use the configured interval; start with the default so we
-                // always have a valid duration even before the first iteration.
                 let mut interval = app_handle
                     .state::<Mutex<AppState>>()
                     .lock()
@@ -460,24 +576,51 @@ pub fn run() {
                 loop {
                     std::thread::sleep(Duration::from_secs(interval));
 
-                    if app_handle.state::<Arc<AtomicBool>>().load(Ordering::Relaxed) {
+                    if app_handle
+                        .state::<Arc<AtomicBool>>()
+                        .load(Ordering::Relaxed)
+                    {
                         break;
                     }
 
-                    // Clone AppState so we hold the lock for the shortest time
-                    // possible and never hold it during DB I/O.
+                    // Clone AppState so the lock is held for the minimum time.
                     let app_state = app_handle
                         .state::<Mutex<AppState>>()
                         .lock()
                         .unwrap()
                         .clone();
-
                     interval = app_state.sample_interval_seconds;
 
                     if !app_state.paused {
                         let db = app_handle.state::<AppDb>();
                         let conn = db.0.lock().unwrap();
+
+                        // 1. App activity sample.
                         let _ = sample_activity_inner(&app_state, &conn);
+
+                        // 2. Flush input counters.
+                        //    Always swap to 0 (even when track_input is off) so
+                        //    counts don't accumulate stale data across setting changes.
+                        let counters = app_handle.state::<Arc<InputCounters>>();
+                        let kbd = counters.keyboard.swap(0, Ordering::Relaxed) as i64;
+                        let clicks = counters.mouse_clicks.swap(0, Ordering::Relaxed) as i64;
+                        let wheel = counters.mouse_wheel.swap(0, Ordering::Relaxed) as i64;
+
+                        if app_state.track_input && (kbd > 0 || clicks > 0 || wheel > 0) {
+                            let ts = chrono::Utc::now().timestamp();
+                            let _ = conn.execute(
+                                "INSERT INTO input_sample
+                                 (timestamp_bucket, keyboard_presses, mouse_clicks, mouse_wheel)
+                                 VALUES (?1, ?2, ?3, ?4)",
+                                params![ts, kbd, clicks, wheel],
+                            );
+                        }
+                    } else {
+                        // Paused: drain counters so they don't burst on resume.
+                        let counters = app_handle.state::<Arc<InputCounters>>();
+                        counters.keyboard.store(0, Ordering::Relaxed);
+                        counters.mouse_clicks.store(0, Ordering::Relaxed);
+                        counters.mouse_wheel.store(0, Ordering::Relaxed);
                     }
                 }
             });
@@ -600,5 +743,42 @@ mod tests {
         assert!(now.year() >= 2024);
         assert!((1..=12).contains(&now.month()));
         assert!((1..=31).contains(&now.day()));
+    }
+
+    #[test]
+    fn should_input_counters_atomic_ops_work() {
+        let c = InputCounters {
+            keyboard: AtomicU64::new(0),
+            mouse_clicks: AtomicU64::new(0),
+            mouse_wheel: AtomicU64::new(0),
+        };
+        c.keyboard.fetch_add(3, Ordering::Relaxed);
+        c.mouse_clicks.fetch_add(7, Ordering::Relaxed);
+        assert_eq!(c.keyboard.swap(0, Ordering::Relaxed), 3);
+        assert_eq!(c.mouse_clicks.swap(0, Ordering::Relaxed), 7);
+        assert_eq!(c.keyboard.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn should_input_sample_insert_and_query_works() {
+        let conn = init_db(":memory:").unwrap();
+        let ts = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO input_sample
+             (timestamp_bucket, keyboard_presses, mouse_clicks, mouse_wheel)
+             VALUES (?1, 42, 17, 5)",
+            params![ts],
+        )
+        .unwrap();
+        let (kbd, clicks): (i64, i64) = conn
+            .query_row(
+                "SELECT COALESCE(SUM(keyboard_presses), 0), COALESCE(SUM(mouse_clicks), 0)
+                 FROM input_sample WHERE timestamp_bucket >= ?1",
+                params![ts - 1],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kbd, 42);
+        assert_eq!(clicks, 17);
     }
 }

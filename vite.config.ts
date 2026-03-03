@@ -7,7 +7,26 @@ const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    // Strip the render-blocking Google Fonts @import from dobruniaui-vue/styles.css.
+    // Without this, WebView2 holds the entire stylesheet until fonts.googleapis.com
+    // responds — in restricted networks the page stays white forever.
+    // CSS variables and utility classes still load; font falls back to Segoe UI.
+    {
+      name: "strip-google-fonts",
+      transform(code: string, id: string) {
+        if (id.includes("dobruniaui-vue") && id.includes("styles.css")) {
+          return {
+            code: code.replace(
+              /@import\s*["']https?:\/\/fonts\.googleapis\.com[^"']*["']\s*;/g,
+              ""
+            ),
+          };
+        }
+      },
+    },
+  ],
 
   resolve: {
     alias: {
@@ -31,6 +50,11 @@ export default defineConfig(async () => ({
     watch: {
       ignored: ["**/src-tauri/**"],
     },
+  },
+
+  // Pre-bundle Tauri API so Vite doesn't discover it at runtime and trigger a reload.
+  optimizeDeps: {
+    include: ["@tauri-apps/api/window"],
   },
 
   // Test options

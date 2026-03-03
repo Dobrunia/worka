@@ -1,13 +1,30 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/vue";
 import SettingsView from "@/views/SettingsView.vue";
 
-// Mock Tauri invoke
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
+  invoke: vi.fn().mockResolvedValue({
+    paused: false,
+    track_window_titles: true,
+    track_input: true,
+    autostart: false,
+    sample_interval_seconds: 10,
+    idle_threshold_seconds: 120,
+    // Fields returned by get_today_summary (used by useTodayData singleton)
+    active_time_seconds: 0,
+    idle_time_seconds: 0,
+    keyboard_presses: 0,
+    mouse_clicks: 0,
+    top_apps: [],
+    is_paused: false,
+  }),
 }));
 
 describe("SettingsView", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("should render settings title", () => {
     render(SettingsView);
 
@@ -41,14 +58,14 @@ describe("SettingsView", () => {
   it("should have exactly 4 settings items", () => {
     render(SettingsView);
 
-    const settingsLabels = [
+    const labels = [
       "Пауза трекинга",
       "Трекинг заголовков окон",
       "Трекинг ввода",
       "Автозапуск",
     ];
 
-    settingsLabels.forEach((label) => {
+    labels.forEach((label) => {
       expect(screen.getByText(label)).toBeInTheDocument();
     });
   });

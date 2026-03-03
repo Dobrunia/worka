@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev:vite": "vite",
-    "dev": "tauri dev",
-    "dev:clean": "scripts/cleanup.bat && npm run dev",
+    "dev": "./scripts/cleanup.bat && tauri dev",
+    "dev:clean": "./scripts/cleanup.bat && tauri dev",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
