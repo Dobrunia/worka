@@ -1,0 +1,4 @@
+# Tauri watcher игнорирует эти файлы
+*.db
+*.db-journal
+target/
