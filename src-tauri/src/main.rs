@@ -1,47 +1,73 @@
-// Prevent multiple instances using Windows mutex
+// Single-instance guard via Windows named mutex.
 use std::sync::Mutex;
 
-// Use SendWrapper to make HANDLE Send between threads
 #[allow(dead_code)]
 struct SendHandle {
     handle: Option<windows::Win32::Foundation::HANDLE>,
 }
-
 unsafe impl Send for SendHandle {}
 unsafe impl Sync for SendHandle {}
 
 static MUTEX_HANDLE: Mutex<Option<SendHandle>> = Mutex::new(None);
 
+/// Try to create the named mutex and become the owner.
+/// Returns true if this is the first (or only) instance.
 #[cfg(target_os = "windows")]
-fn init_single_instance() -> bool {
+fn try_acquire_mutex() -> bool {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::Foundation::GetLastError;
-    use windows::Win32::Foundation::ERROR_ALREADY_EXISTS;
+    use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
     use windows::Win32::System::Threading::CreateMutexW;
 
-    let mutex_name: Vec<u16> = OsStr::new("Local\\WorkaSingleInstanceMutex")
+    let name: Vec<u16> = OsStr::new("Local\\WorkaSingleInstanceMutex")
         .encode_wide()
         .chain(Some(0))
         .collect();
 
     unsafe {
-        // bInitialOwner = false: mutex is a sentinel only, we don't need to own it.
-        let handle = CreateMutexW(None, false, windows::core::PCWSTR(mutex_name.as_ptr()));
-        if handle.is_ok() {
-            let last_error = GetLastError();
-            if last_error == ERROR_ALREADY_EXISTS {
-                let _ = CloseHandle(handle.unwrap());
-                return false; // Already running, this instance should exit
+        let handle = CreateMutexW(None, false, windows::core::PCWSTR(name.as_ptr()));
+        if let Ok(h) = handle {
+            if GetLastError() != ERROR_ALREADY_EXISTS {
+                // We are the first instance — keep the handle alive for the process lifetime.
+                *MUTEX_HANDLE.lock().unwrap() = Some(SendHandle { handle: Some(h) });
+                return true;
             }
-            
-            // Store handle globally to keep mutex alive
-            *MUTEX_HANDLE.lock().unwrap() = Some(SendHandle { handle: Some(handle.unwrap()) });
-            return true; // First instance
+            let _ = CloseHandle(h);
         }
+        false
     }
-    false
+}
+
+#[cfg(target_os = "windows")]
+fn init_single_instance() -> bool {
+    if try_acquire_mutex() {
+        return true;
+    }
+
+    // Another instance already holds the mutex.
+
+    // Release builds: just exit — the running instance is the correct one.
+    #[cfg(not(debug_assertions))]
+    return false;
+
+    // Debug builds (dev mode): the leftover process is stale (e.g. survived a
+    // Ctrl-C from `tauri dev`).  Kill it and retry so every `npm run dev` always
+    // starts with a clean slate — no white screen from a dead Vite connection.
+    #[cfg(debug_assertions)]
+    return {
+        let current_pid = std::process::id().to_string();
+        let _ = std::process::Command::new("taskkill")
+            .args([
+                "/F",
+                "/IM",
+                "worka.exe",
+                "/FI",
+                &format!("PID ne {}", current_pid),
+            ])
+            .output();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        try_acquire_mutex()
+    };
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -50,11 +76,8 @@ fn init_single_instance() -> bool {
 }
 
 fn main() {
-    // Check if another instance is already running
     if !init_single_instance() {
-        // Exit silently - the running instance continues
         std::process::exit(0);
     }
-
     tauri_app_lib::run();
 }

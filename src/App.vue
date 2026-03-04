@@ -52,6 +52,17 @@ onUnmounted(() => stopPolling());
   </div>
 </template>
 
+<style>
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+}
+</style>
+
 <style scoped>
 .app-container {
   display: flex;

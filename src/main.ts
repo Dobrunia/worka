@@ -1,11 +1,9 @@
 import { createApp } from "vue";
 import App from "./App.vue";
-import DobruniaUI from "dobruniaui-vue";
 import "dobruniaui-vue/styles.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const app = createApp(App);
-app.use(DobruniaUI);
 app.mount("#app");
 
 // Show window only after Vue has mounted and CSS is applied.
