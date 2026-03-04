@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onMounted } from "vue";
 import { DbrCard } from "dobruniaui-vue";
 import { Bar } from "vue-chartjs";
 import {
@@ -17,7 +17,9 @@ import { useAllTimeData } from "@/composables/useAllTimeData";
 
 ChartJS.register(Title, Tooltip, Legend, BarElement, CategoryScale, LinearScale);
 
-const { allTimeSummary, formatTime } = useAllTimeData();
+const { allTimeSummary, formatTime, startPolling } = useAllTimeData();
+
+onMounted(() => startPolling());
 
 const topApps = computed(() =>
   allTimeSummary.value.top_apps.map((a) => ({

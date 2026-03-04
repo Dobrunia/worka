@@ -31,8 +31,9 @@ async function loadWeekSummary(): Promise<void> {
 }
 
 function startPolling(intervalMs = 60000): void {
-  loadWeekSummary();
-  setInterval(loadWeekSummary, intervalMs);
+  loadWeekSummary().then(() => {
+    setInterval(loadWeekSummary, intervalMs);
+  });
 }
 
 export function useWeekData() {

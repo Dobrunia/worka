@@ -379,7 +379,7 @@ fn get_today_summary(
              WHERE s.timestamp >= ?1 AND s.is_idle = 0
              GROUP BY s.app_id
              ORDER BY seconds DESC
-             LIMIT 5",
+             LIMIT 15",
         )
         .map_err(|e| e.to_string())?;
 
@@ -519,7 +519,7 @@ fn get_all_time_summary(
              WHERE s.is_idle = 0
              GROUP BY s.app_id
              ORDER BY seconds DESC
-             LIMIT 10",
+             LIMIT 15",
         )
         .map_err(|e| e.to_string())?;
 

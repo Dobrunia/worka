@@ -34,8 +34,10 @@ async function loadAllTimeSummary(): Promise<void> {
 }
 
 function startPolling(intervalMs = 60000): void {
-  loadAllTimeSummary();
-  setInterval(loadAllTimeSummary, intervalMs);
+  // Load immediately, then start interval
+  loadAllTimeSummary().then(() => {
+    setInterval(loadAllTimeSummary, intervalMs);
+  });
 }
 
 export function useAllTimeData() {
