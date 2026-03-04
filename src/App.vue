@@ -28,7 +28,6 @@ const currentView = computed(() => {
   }
 });
 
-// Polling lifecycle is owned here so it runs regardless of active tab.
 const { isPaused, startPolling, stopPolling } = useTodayData();
 
 onMounted(() => startPolling());
@@ -36,18 +35,12 @@ onUnmounted(() => stopPolling());
 </script>
 
 <template>
-  <div class="app-container dbru-bg">
+  <div class="app-container dbru-root">
     <AppHeader :is-paused="isPaused" />
-
-    <AppNavigation
-      v-model:active-tab="activeTab"
-      :tabs="tabs"
-    />
-
-    <main class="content dbru-surface">
+    <AppNavigation v-model:active-tab="activeTab" :tabs="tabs" />
+    <main class="content">
       <component :is="currentView" />
     </main>
-
     <AppFooter />
   </div>
 </template>
@@ -60,6 +53,11 @@ body,
   padding: 0;
   height: 100%;
   overflow: hidden;
+}
+
+/* Inherit the library's font across all elements, not just those with dbru-text-* */
+* {
+  font-family: var(--dbru-font-family);
 }
 </style>
 

@@ -15,26 +15,19 @@ defineProps<{
 <template>
   <div class="top-apps-list">
     <h3 class="list-title dbru-text-base dbru-text-main">Топ приложений</h3>
-    
-    <div v-if="!apps || apps.length === 0" class="empty-state">
-      <p class="dbru-text-sm dbru-text-muted">Нет данных</p>
-    </div>
-    
+
+    <p v-if="!apps || apps.length === 0" class="dbru-text-sm dbru-text-muted empty">
+      Нет данных
+    </p>
+
     <div v-else class="apps-container">
-      <div
-        v-for="app in apps"
-        :key="app.name"
-        class="app-item"
-      >
+      <div v-for="app in apps" :key="app.name" class="app-item">
         <div class="app-info">
           <span class="app-name dbru-text-sm dbru-text-main">{{ app.name }}</span>
-          <span class="app-time dbru-text-xs dbru-text-muted">{{ formatTime(app.timeSeconds) }}</span>
+          <span class="dbru-text-xs dbru-text-muted">{{ formatTime(app.timeSeconds) }}</span>
         </div>
         <div class="progress-bar">
-          <div
-            class="progress-fill"
-            :style="{ width: `${app.percentage}%` }"
-          />
+          <div class="progress-fill" :style="{ width: `${app.percentage}%` }" />
         </div>
       </div>
     </div>
@@ -43,56 +36,59 @@ defineProps<{
 
 <style scoped>
 .top-apps-list {
-  margin-top: var(--dbru-space-4);
-}
-
-.list-title {
-  font-weight: 600;
-  margin: 0 0 var(--dbru-space-4) 0;
-}
-
-.empty-state {
-  text-align: center;
-  padding: var(--dbru-space-6);
-}
-
-.apps-container {
   display: flex;
   flex-direction: column;
   gap: var(--dbru-space-4);
 }
 
+.list-title {
+  font-weight: var(--dbru-font-weight-semibold);
+  margin: 0;
+}
+
+.empty {
+  margin: 0;
+  text-align: center;
+  padding: var(--dbru-space-4) 0;
+}
+
+.apps-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dbru-space-3);
+}
+
 .app-item {
   display: flex;
   flex-direction: column;
-  gap: var(--dbru-space-2);
+  gap: var(--dbru-space-1);
 }
 
 .app-info {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: baseline;
 }
 
 .app-name {
   font-weight: 500;
-}
-
-.app-time {
-  font-size: var(--dbru-font-size-xs);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .progress-bar {
-  height: 6px;
+  height: 4px;
   background: var(--dbru-color-border);
-  border-radius: var(--dbru-radius-sm);
+  border-radius: 2px;
   overflow: hidden;
 }
 
 .progress-fill {
   height: 100%;
   background: var(--dbru-color-primary);
-  border-radius: var(--dbru-radius-sm);
+  border-radius: 2px;
   transition: width var(--dbru-duration-base) var(--dbru-ease-standard);
 }
 </style>

@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { DbrCard } from "dobruniaui-vue";
+
 defineProps<{
   label: string;
   value: string;
@@ -6,27 +8,21 @@ defineProps<{
 </script>
 
 <template>
-  <div class="kpi-card dbru-surface">
-    <span class="kpi-label dbru-text-sm dbru-text-muted">{{ label }}</span>
+  <DbrCard class="kpi-card">
+    <span class="kpi-label dbru-text-xs dbru-text-muted">{{ label }}</span>
     <span class="kpi-value dbru-text-lg dbru-text-main">{{ value }}</span>
-  </div>
+  </DbrCard>
 </template>
 
 <style scoped>
 .kpi-card {
-  padding: var(--dbru-space-4);
-  border-radius: var(--dbru-radius-md);
+  padding: var(--dbru-space-4) var(--dbru-space-5);
   display: flex;
   flex-direction: column;
   gap: var(--dbru-space-2);
 }
 
-.kpi-label {
-  font-size: var(--dbru-font-size-sm);
-}
-
 .kpi-value {
-  font-size: var(--dbru-font-size-lg);
-  font-weight: 600;
+  font-weight: var(--dbru-font-weight-semibold);
 }
 </style>

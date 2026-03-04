@@ -7,7 +7,6 @@ import { useTodayData } from "@/composables/useTodayData";
 
 const { summary, isPaused, formatTime } = useTodayData();
 
-// Map backend snake_case to component camelCase.
 const topApps = computed(() =>
   summary.value.top_apps.map((a) => ({
     name: a.name,
@@ -24,26 +23,59 @@ const hasData = computed(
 </script>
 
 <template>
-  <DbrCard class="today-view">
-    <header class="view-header">
-      <h2 class="dbru-text-lg dbru-text-main">Сегодня</h2>
-    </header>
+  <div class="today-view">
+    <h2 class="view-title dbru-text-lg dbru-text-main">Сегодня</h2>
 
-    <section v-if="!hasData" class="placeholder-section">
-      <p class="placeholder-text dbru-text-sm dbru-text-muted">
+    <DbrCard v-if="!hasData" class="empty-card">
+      <p class="dbru-text-sm dbru-text-muted">
         {{ isPaused ? "Трекинг на паузе" : "Данные появятся после начала трекинга" }}
       </p>
-    </section>
+    </DbrCard>
 
     <template v-else>
-      <section class="kpi-grid">
+      <div class="kpi-grid">
         <KpiCard label="Активное время" :value="formatTime(summary.active_time_seconds)" />
         <KpiCard label="Время простоя" :value="formatTime(summary.idle_time_seconds)" />
         <KpiCard label="Нажатия клавиш" :value="summary.keyboard_presses.toString()" />
         <KpiCard label="Клики мыши" :value="summary.mouse_clicks.toString()" />
-      </section>
+      </div>
 
-      <TopAppsList :apps="topApps" />
+      <DbrCard class="apps-card">
+        <TopAppsList :apps="topApps" />
+      </DbrCard>
     </template>
-  </DbrCard>
+  </div>
 </template>
+
+<style scoped>
+.today-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dbru-space-4);
+  max-width: 960px;
+}
+
+.view-title {
+  margin: 0;
+  font-weight: var(--dbru-font-weight-semibold);
+}
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--dbru-space-4);
+}
+
+.empty-card {
+  padding: var(--dbru-space-6);
+  text-align: center;
+}
+
+.empty-card p {
+  margin: 0;
+}
+
+.apps-card {
+  padding: var(--dbru-space-4) var(--dbru-space-5);
+}
+</style>

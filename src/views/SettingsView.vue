@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
-import { DbrCard, DbrCheckbox } from 'dobruniaui-vue';
-import { invoke } from '@tauri-apps/api/core';
-import { useTodayData } from '@/composables/useTodayData';
-import type { AppSettings } from '@/composables/useTodayData';
+import { ref, onMounted } from "vue";
+import { DbrCard, DbrCheckbox } from "dobruniaui-vue";
+import { invoke } from "@tauri-apps/api/core";
+import { useTodayData } from "@/composables/useTodayData";
+import type { AppSettings } from "@/composables/useTodayData";
 
 const { loadSummary } = useTodayData();
 
@@ -16,7 +16,7 @@ const idleThresholdSeconds = ref(120);
 
 async function loadSettings() {
   try {
-    const s: AppSettings = await invoke('get_settings');
+    const s: AppSettings = await invoke("get_settings");
     paused.value = s.paused;
     trackWindowTitles.value = s.track_window_titles;
     trackInput.value = s.track_input;
@@ -24,13 +24,13 @@ async function loadSettings() {
     sampleIntervalSeconds.value = s.sample_interval_seconds;
     idleThresholdSeconds.value = s.idle_threshold_seconds;
   } catch (error) {
-    console.error('Failed to load settings:', error);
+    console.error("Failed to load settings:", error);
   }
 }
 
 async function saveSettings() {
   try {
-    await invoke('set_settings', {
+    await invoke("set_settings", {
       paused: paused.value,
       sampleIntervalSeconds: sampleIntervalSeconds.value,
       idleThresholdSeconds: idleThresholdSeconds.value,
@@ -38,10 +38,9 @@ async function saveSettings() {
       trackInput: trackInput.value,
       autostart: autostart.value,
     });
-    // Refresh shared state so AppHeader badge updates immediately.
     await loadSummary();
   } catch (error) {
-    console.error('Failed to save settings:', error);
+    console.error("Failed to save settings:", error);
   }
 }
 
@@ -49,20 +48,61 @@ onMounted(loadSettings);
 </script>
 
 <template>
-  <DbrCard>
-    <header>
-      <h2 class="dbru-text-lg dbru-text-main">Настройки</h2>
-    </header>
+  <div class="settings-view">
+    <h2 class="view-title dbru-text-lg dbru-text-main">Настройки</h2>
 
-    <section>
-      <DbrCheckbox v-model="paused" @change="saveSettings" label="Пауза трекинга" />
-      <DbrCheckbox
-        v-model="trackWindowTitles"
-        @change="saveSettings"
-        label="Трекинг заголовков окон"
-      />
-      <DbrCheckbox v-model="trackInput" @change="saveSettings" label="Трекинг ввода" />
-      <DbrCheckbox v-model="autostart" @change="saveSettings" label="Автозапуск" />
-    </section>
-  </DbrCard>
+    <DbrCard class="settings-card">
+      <h3 class="section-title dbru-text-base dbru-text-main">Трекинг</h3>
+      <div class="settings-group">
+        <DbrCheckbox v-model="paused" @change="saveSettings" label="Пауза трекинга" />
+        <DbrCheckbox
+          v-model="trackWindowTitles"
+          @change="saveSettings"
+          label="Сохранять заголовки окон"
+        />
+        <DbrCheckbox
+          v-model="trackInput"
+          @change="saveSettings"
+          label="Отслеживать клавиатуру и мышь"
+        />
+        <DbrCheckbox
+          v-model="autostart"
+          @change="saveSettings"
+          label="Автозапуск с Windows"
+        />
+      </div>
+    </DbrCard>
+  </div>
 </template>
+
+<style scoped>
+.settings-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dbru-space-4);
+  max-width: 560px;
+}
+
+.view-title {
+  margin: 0;
+  font-weight: var(--dbru-font-weight-semibold);
+}
+
+.settings-card {
+  padding: var(--dbru-space-5) var(--dbru-space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--dbru-space-4);
+}
+
+.section-title {
+  margin: 0;
+  font-weight: var(--dbru-font-weight-semibold);
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dbru-space-4);
+}
+</style>

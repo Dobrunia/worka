@@ -3,40 +3,33 @@ import { DbrCard } from "dobruniaui-vue";
 </script>
 
 <template>
-  <DbrCard class="timeline-view">
-    <header class="view-header">
-      <h2 class="dbru-text-lg dbru-text-main">Таймлайн</h2>
-    </header>
-
-    <section class="placeholder-section">
-      <p class="placeholder-text dbru-text-sm dbru-text-muted">
-        Детальный просмотр дня появится здесь
-      </p>
-    </section>
-  </DbrCard>
+  <div class="timeline-view">
+    <h2 class="view-title dbru-text-lg dbru-text-main">Таймлайн</h2>
+    <DbrCard class="placeholder-card">
+      <p class="dbru-text-sm dbru-text-muted">Детальный просмотр дня появится здесь</p>
+    </DbrCard>
+  </div>
 </template>
 
 <style scoped>
 .timeline-view {
-  padding: var(--dbru-space-6);
-  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--dbru-space-4);
+  max-width: 960px;
 }
 
-.view-header {
-  margin-bottom: var(--dbru-space-6);
-}
-
-.view-header h2 {
+.view-title {
   margin: 0;
+  font-weight: var(--dbru-font-weight-semibold);
 }
 
-.placeholder-section {
+.placeholder-card {
+  padding: var(--dbru-space-6);
   text-align: center;
-  padding: var(--dbru-space-6);
 }
 
-.placeholder-text {
+.placeholder-card p {
   margin: 0;
-  font-style: italic;
 }
 </style>
