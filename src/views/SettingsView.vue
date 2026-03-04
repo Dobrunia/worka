@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
-import { DbrCard, DbrCheckbox } from "dobruniaui-vue";
-import { invoke } from "@tauri-apps/api/core";
-import { useTodayData } from "@/composables/useTodayData";
-import type { AppSettings } from "@/composables/useTodayData";
+import { ref, onMounted } from 'vue';
+import { DbrCard, DbrCheckbox } from 'dobruniaui-vue';
+import { invoke } from '@tauri-apps/api/core';
+import { useTodayData } from '@/composables/useTodayData';
+import type { AppSettings } from '@/composables/useTodayData';
 
 const { loadSummary } = useTodayData();
 
@@ -16,7 +16,7 @@ const idleThresholdSeconds = ref(120);
 
 async function loadSettings() {
   try {
-    const s: AppSettings = await invoke("get_settings");
+    const s: AppSettings = await invoke('get_settings');
     paused.value = s.paused;
     trackWindowTitles.value = s.track_window_titles;
     trackInput.value = s.track_input;
@@ -24,13 +24,13 @@ async function loadSettings() {
     sampleIntervalSeconds.value = s.sample_interval_seconds;
     idleThresholdSeconds.value = s.idle_threshold_seconds;
   } catch (error) {
-    console.error("Failed to load settings:", error);
+    console.error('Failed to load settings:', error);
   }
 }
 
 async function saveSettings() {
   try {
-    await invoke("set_settings", {
+    await invoke('set_settings', {
       paused: paused.value,
       sampleIntervalSeconds: sampleIntervalSeconds.value,
       idleThresholdSeconds: idleThresholdSeconds.value,
@@ -41,7 +41,7 @@ async function saveSettings() {
     // Refresh shared state so AppHeader badge updates immediately.
     await loadSummary();
   } catch (error) {
-    console.error("Failed to save settings:", error);
+    console.error('Failed to save settings:', error);
   }
 }
 
@@ -49,31 +49,20 @@ onMounted(loadSettings);
 </script>
 
 <template>
-  <DbrCard class="settings-view">
-    <header class="view-header">
+  <DbrCard>
+    <header>
       <h2 class="dbru-text-lg dbru-text-main">Настройки</h2>
     </header>
 
-    <section class="settings-group">
-      <div class="setting-item">
-        <span class="setting-label dbru-text-base dbru-text-main">Пауза трекинга</span>
-        <DbrCheckbox v-model="paused" @change="saveSettings" />
-      </div>
-
-      <div class="setting-item">
-        <span class="setting-label dbru-text-base dbru-text-main">Трекинг заголовков окон</span>
-        <DbrCheckbox v-model="trackWindowTitles" @change="saveSettings" />
-      </div>
-
-      <div class="setting-item">
-        <span class="setting-label dbru-text-base dbru-text-main">Трекинг ввода</span>
-        <DbrCheckbox v-model="trackInput" @change="saveSettings" />
-      </div>
-
-      <div class="setting-item">
-        <span class="setting-label dbru-text-base dbru-text-main">Автозапуск</span>
-        <DbrCheckbox v-model="autostart" @change="saveSettings" />
-      </div>
+    <section>
+      <DbrCheckbox v-model="paused" @change="saveSettings" label="Пауза трекинга" />
+      <DbrCheckbox
+        v-model="trackWindowTitles"
+        @change="saveSettings"
+        label="Трекинг заголовков окон"
+      />
+      <DbrCheckbox v-model="trackInput" @change="saveSettings" label="Трекинг ввода" />
+      <DbrCheckbox v-model="autostart" @change="saveSettings" label="Автозапуск" />
     </section>
   </DbrCard>
 </template>
