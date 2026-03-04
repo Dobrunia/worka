@@ -6,6 +6,7 @@ import AppFooter from "@/components/layout/AppFooter.vue";
 import TodayView from "@/views/TodayView.vue";
 import WeekView from "@/views/WeekView.vue";
 import TimelineView from "@/views/TimelineView.vue";
+import AllTimeView from "@/views/AllTimeView.vue";
 import SettingsView from "@/views/SettingsView.vue";
 import { useTodayData } from "@/composables/useTodayData";
 
@@ -14,6 +15,7 @@ const activeTab = ref("today");
 const tabs = [
   { id: "today", label: "Сегодня" },
   { id: "week", label: "Неделя" },
+  { id: "alltime", label: "За всё время" },
   { id: "timeline", label: "Таймлайн" },
   { id: "settings", label: "Настройки" },
 ];
@@ -22,6 +24,7 @@ const currentView = computed(() => {
   switch (activeTab.value) {
     case "today": return TodayView;
     case "week": return WeekView;
+    case "alltime": return AllTimeView;
     case "timeline": return TimelineView;
     case "settings": return SettingsView;
     default: return TodayView;

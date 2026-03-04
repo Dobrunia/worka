@@ -1,35 +1,26 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { DbrCard } from "dobruniaui-vue";
-import { Bar, Doughnut } from "vue-chartjs";
+import { Bar } from "vue-chartjs";
 import {
   Chart as ChartJS,
   Title,
   Tooltip,
   Legend,
   BarElement,
-  ArcElement,
   CategoryScale,
   LinearScale,
 } from "chart.js";
 import KpiCard from "@/components/ui/KpiCard.vue";
 import TopAppsList from "@/components/ui/TopAppsList.vue";
-import { useTodayData } from "@/composables/useTodayData";
+import { useAllTimeData } from "@/composables/useAllTimeData";
 
-ChartJS.register(
-  Title,
-  Tooltip,
-  Legend,
-  BarElement,
-  ArcElement,
-  CategoryScale,
-  LinearScale
-);
+ChartJS.register(Title, Tooltip, Legend, BarElement, CategoryScale, LinearScale);
 
-const { summary, isPaused, formatTime } = useTodayData();
+const { allTimeSummary, formatTime } = useAllTimeData();
 
 const topApps = computed(() =>
-  summary.value.top_apps.map((a) => ({
+  allTimeSummary.value.top_apps.map((a) => ({
     name: a.name,
     timeSeconds: a.time_seconds,
     percentage: a.percentage,
@@ -38,80 +29,68 @@ const topApps = computed(() =>
 
 const hasData = computed(
   () =>
-    summary.value.active_time_seconds > 0 ||
-    summary.value.idle_time_seconds > 0
+    allTimeSummary.value.active_time_seconds > 0 ||
+    allTimeSummary.value.idle_time_seconds > 0
 );
 
-// Bar chart for top apps
 const appsChartData = computed(() => ({
-  labels: summary.value.top_apps.map((a) => a.name),
+  labels: allTimeSummary.value.top_apps.slice(0, 7).map((a) => a.name),
   datasets: [
     {
       label: "Время",
-      data: summary.value.top_apps.map((a) =>
-        Math.round(a.time_seconds / 60)
+      data: allTimeSummary.value.top_apps.slice(0, 7).map((a) =>
+        Math.round(a.time_seconds / 3600 * 10) / 10
       ),
-      backgroundColor: [
-        "#3b82f6",
-        "#22c55e",
-        "#f59e0b",
-        "#ef4444",
-        "#8b5cf6",
-      ],
+      backgroundColor: "#3b82f6",
       borderRadius: 4,
     },
   ],
 }));
 
-const barOptions = {
+const appsChartOptions = {
   responsive: true,
   maintainAspectRatio: false,
-  indexAxis: "y" as const,
   plugins: {
     legend: { display: false },
     tooltip: {
       callbacks: {
-        label: (ctx: any) => `${ctx.raw} мин.`,
+        label: (ctx: any) => `${ctx.raw} ч.`,
       },
     },
   },
   scales: {
-    x: {
+    y: {
       beginAtZero: true,
-      title: { display: true, text: "Минуты" },
+      title: { display: true, text: "Часы" },
     },
   },
 };
 
-// Doughnut chart for active vs idle
-const activityChartData = computed(() => ({
+const timeDistributionData = computed(() => ({
   labels: ["Активное", "Простой"],
   datasets: [
     {
       data: [
-        summary.value.active_time_seconds,
-        summary.value.idle_time_seconds,
+        allTimeSummary.value.active_time_seconds,
+        allTimeSummary.value.idle_time_seconds,
       ],
       backgroundColor: ["#22c55e", "#f59e0b"],
-      borderWidth: 0,
     },
   ],
 }));
 
-const doughnutOptions = {
+const pieOptions = {
   responsive: true,
   maintainAspectRatio: false,
-  cutout: "60%",
   plugins: {
     legend: { position: "bottom" as const },
     tooltip: {
       callbacks: {
         label: (ctx: any) => {
           const total =
-            summary.value.active_time_seconds +
-            summary.value.idle_time_seconds;
-          const pct =
-            total > 0 ? Math.round((ctx.raw / total) * 100) : 0;
+            allTimeSummary.value.active_time_seconds +
+            allTimeSummary.value.idle_time_seconds;
+          const pct = total > 0 ? Math.round((ctx.raw / total) * 100) : 0;
           return `${ctx.label}: ${pct}%`;
         },
       },
@@ -121,38 +100,35 @@ const doughnutOptions = {
 </script>
 
 <template>
-  <div class="today-view">
-    <h2 class="view-title dbru-text-lg dbru-text-main">Сегодня</h2>
+  <div class="alltime-view">
+    <h2 class="view-title dbru-text-lg dbru-text-main">За всё время</h2>
 
-    <DbrCard v-if="!hasData" class="empty-card">
-      <p class="dbru-text-sm dbru-text-muted">
-        {{
-          isPaused ? "Трекинг на паузе" : "Данные появятся после начала трекинга"
-        }}
-      </p>
-    </DbrCard>
-
-    <template v-else>
+    <template v-if="hasData">
       <div class="kpi-grid">
         <KpiCard
           label="Активное время"
-          :value="formatTime(summary.active_time_seconds)"
+          :value="formatTime(allTimeSummary.active_time_seconds)"
           icon="⏱️"
         />
         <KpiCard
           label="Время простоя"
-          :value="formatTime(summary.idle_time_seconds)"
+          :value="formatTime(allTimeSummary.idle_time_seconds)"
           icon="☕"
         />
         <KpiCard
           label="Нажатия клавиш"
-          :value="summary.keyboard_presses.toString()"
+          :value="allTimeSummary.keyboard_presses.toLocaleString()"
           icon="⌨️"
         />
         <KpiCard
           label="Клики мыши"
-          :value="summary.mouse_clicks.toString()"
+          :value="allTimeSummary.mouse_clicks.toLocaleString()"
           icon="🖱️"
+        />
+        <KpiCard
+          label="Дней отслежено"
+          :value="allTimeSummary.days_tracked.toString()"
+          icon="📅"
         />
       </div>
 
@@ -165,17 +141,24 @@ const doughnutOptions = {
             <Bar
               v-if="appsChartData.labels.length > 0"
               :data="appsChartData"
-              :options="barOptions"
+              :options="appsChartOptions"
             />
+            <p v-else class="dbru-text-sm dbru-text-muted">Нет данных</p>
           </div>
         </DbrCard>
 
         <DbrCard class="chart-card">
           <h3 class="chart-title dbru-text-sm dbru-text-main">
-            Активность
+            Активность / Простой
           </h3>
-          <div class="chart-container doughnut-container">
-            <Doughnut :data="activityChartData" :options="doughnutOptions" />
+          <div class="chart-container">
+            <Bar
+              :data="timeDistributionData"
+              :options="{
+                ...pieOptions,
+                indexAxis: 'y' as const,
+              }"
+            />
           </div>
         </DbrCard>
       </div>
@@ -184,11 +167,17 @@ const doughnutOptions = {
         <TopAppsList :apps="topApps" />
       </DbrCard>
     </template>
+
+    <DbrCard v-else class="empty-card">
+      <p class="dbru-text-sm dbru-text-muted">
+        Данные появятся после начала трекинга
+      </p>
+    </DbrCard>
   </div>
 </template>
 
 <style scoped>
-.today-view {
+.alltime-view {
   display: flex;
   flex-direction: column;
   gap: var(--dbru-space-4);
@@ -202,13 +191,13 @@ const doughnutOptions = {
 
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: var(--dbru-space-4);
 }
 
 .charts-row {
   display: grid;
-  grid-template-columns: 1.5fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: var(--dbru-space-4);
 }
 
@@ -222,13 +211,11 @@ const doughnutOptions = {
 }
 
 .chart-container {
-  height: 200px;
+  height: 220px;
 }
 
-.doughnut-container {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.apps-card {
+  padding: var(--dbru-space-4) var(--dbru-space-5);
 }
 
 .empty-card {
@@ -240,13 +227,9 @@ const doughnutOptions = {
   margin: 0;
 }
 
-.apps-card {
-  padding: var(--dbru-space-4) var(--dbru-space-5);
-}
-
 @media (max-width: 800px) {
   .kpi-grid {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(3, 1fr);
   }
 
   .charts-row {

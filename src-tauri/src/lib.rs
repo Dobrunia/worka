@@ -424,8 +424,143 @@ fn get_today_summary(
 }
 
 #[tauri::command]
-fn get_week_summary() -> serde_json::Value {
-    serde_json::json!({ "days": [] })
+fn get_week_summary(
+    db: tauri::State<AppDb>,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<serde_json::Value, String> {
+    let interval = {
+        let s = state.inner().lock().unwrap();
+        s.sample_interval_seconds as i64
+    };
+
+    let conn = db.0.lock().unwrap();
+    let now = chrono::Utc::now();
+    let days: Vec<serde_json::Value> = (0..7)
+        .rev()
+        .map(|days_ago| {
+            let date = now.date_naive() - chrono::Duration::days(days_ago);
+            let start = date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
+            let end = date.and_hms_opt(23, 59, 59).unwrap().and_utc().timestamp();
+
+            let (active, idle): (i64, i64) = conn
+                .query_row(
+                    "SELECT
+                       COALESCE(SUM(CASE WHEN is_idle = 0 THEN 1 ELSE 0 END), 0) * ?1,
+                       COALESCE(SUM(CASE WHEN is_idle = 1 THEN 1 ELSE 0 END), 0) * ?1
+                     FROM activity_sample WHERE timestamp >= ?2 AND timestamp <= ?3",
+                    params![interval, start, end],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap_or((0, 0));
+
+            let (keyboard, mouse): (i64, i64) = conn
+                .query_row(
+                    "SELECT COALESCE(SUM(keyboard_presses), 0), COALESCE(SUM(mouse_clicks), 0)
+                     FROM input_sample WHERE timestamp_bucket >= ?1 AND timestamp_bucket <= ?2",
+                    params![start, end],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap_or((0, 0));
+
+            serde_json::json!({
+                "date": date.format("%Y-%m-%d").to_string(),
+                "day_name": date.format("%a").to_string(),
+                "active_time_seconds": active,
+                "idle_time_seconds": idle,
+                "keyboard_presses": keyboard,
+                "mouse_clicks": mouse,
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({ "days": days }))
+}
+
+#[tauri::command]
+fn get_all_time_summary(
+    db: tauri::State<AppDb>,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<serde_json::Value, String> {
+    let interval = {
+        let s = state.inner().lock().unwrap();
+        s.sample_interval_seconds as i64
+    };
+
+    let conn = db.0.lock().unwrap();
+
+    // Total active and idle time
+    let (active_time, idle_time): (i64, i64) = conn
+        .query_row(
+            "SELECT
+               COALESCE(SUM(CASE WHEN is_idle = 0 THEN 1 ELSE 0 END), 0) * ?1,
+               COALESCE(SUM(CASE WHEN is_idle = 1 THEN 1 ELSE 0 END), 0) * ?1
+             FROM activity_sample",
+            params![interval],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
+
+    // Total input
+    let (keyboard_total, mouse_total): (i64, i64) = conn
+        .query_row(
+            "SELECT COALESCE(SUM(keyboard_presses), 0), COALESCE(SUM(mouse_clicks), 0)
+             FROM input_sample",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap_or((0, 0));
+
+    // Top apps
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT a.display_name, COUNT(*) * ?1 as seconds
+             FROM activity_sample s
+             JOIN app a ON s.app_id = a.id
+             WHERE s.is_idle = 0
+             GROUP BY s.app_id
+             ORDER BY seconds DESC
+             LIMIT 10",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let raw_apps: Vec<(String, i64)> = stmt
+        .query_map(params![interval], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let total_active = active_time.max(1);
+    let top_apps: Vec<serde_json::Value> = raw_apps
+        .into_iter()
+        .map(|(name, seconds)| {
+            let percentage = (seconds * 100 / total_active) as u32;
+            serde_json::json!({
+                "name": name,
+                "time_seconds": seconds,
+                "percentage": percentage,
+            })
+        })
+        .collect();
+
+    // Days tracked
+    let days_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT date(timestamp, 'unixepoch')) FROM activity_sample",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    Ok(serde_json::json!({
+        "active_time_seconds": active_time,
+        "idle_time_seconds": idle_time,
+        "keyboard_presses": keyboard_total,
+        "mouse_clicks": mouse_total,
+        "top_apps": top_apps,
+        "days_tracked": days_count,
+    }))
 }
 
 #[tauri::command]
@@ -464,6 +599,7 @@ pub fn run() {
             set_settings,
             get_today_summary,
             get_week_summary,
+            get_all_time_summary,
             get_timeline,
             toggle_pause,
             quit_app
