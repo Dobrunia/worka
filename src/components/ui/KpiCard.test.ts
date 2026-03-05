@@ -20,7 +20,7 @@ describe("KpiCard", () => {
       props: { label: "Test", value: "100" },
     });
 
-    const card = screen.getByText("Test").parentElement;
+    const card = screen.getByText("Test").closest(".kpi-card");
     expect(card).toHaveClass("kpi-card");
   });
 
@@ -40,13 +40,13 @@ describe("KpiCard", () => {
     expect(screen.getByText("2ч 15м")).toBeInTheDocument();
   });
 
-  it("should use dbru-text-sm class for label", () => {
+  it("should use dbru-text-xs class for label", () => {
     render(KpiCard, {
       props: { label: "Label", value: "Value" },
     });
 
     const labelElement = screen.getByText("Label");
-    expect(labelElement).toHaveClass("dbru-text-sm");
+    expect(labelElement).toHaveClass("dbru-text-xs");
   });
 
   it("should use dbru-text-lg class for value", () => {

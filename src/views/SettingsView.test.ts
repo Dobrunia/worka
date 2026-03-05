@@ -40,19 +40,19 @@ describe("SettingsView", () => {
   it("should display window titles tracking option", () => {
     render(SettingsView);
 
-    expect(screen.getByText("Трекинг заголовков окон")).toBeInTheDocument();
+    expect(screen.getByText("Сохранять заголовки окон")).toBeInTheDocument();
   });
 
   it("should display input tracking option", () => {
     render(SettingsView);
 
-    expect(screen.getByText("Трекинг ввода")).toBeInTheDocument();
+    expect(screen.getByText("Отслеживать клавиатуру и мышь")).toBeInTheDocument();
   });
 
   it("should display autostart option", () => {
     render(SettingsView);
 
-    expect(screen.getByText("Автозапуск")).toBeInTheDocument();
+    expect(screen.getByText("Автозапуск с Windows")).toBeInTheDocument();
   });
 
   it("should have exactly 4 settings items", () => {
@@ -60,9 +60,9 @@ describe("SettingsView", () => {
 
     const labels = [
       "Пауза трекинга",
-      "Трекинг заголовков окон",
-      "Трекинг ввода",
-      "Автозапуск",
+      "Сохранять заголовки окон",
+      "Отслеживать клавиатуру и мышь",
+      "Автозапуск с Windows",
     ];
 
     labels.forEach((label) => {

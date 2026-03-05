@@ -7,7 +7,12 @@ export interface AllTimeSummary {
   idle_time_seconds: number;
   keyboard_presses: number;
   mouse_clicks: number;
-  top_apps: Array<{ name: string; time_seconds: number; percentage: number }>;
+  top_apps: Array<{
+    name: string;
+    icon_data_url?: string | null;
+    time_seconds: number;
+    percentage: number;
+  }>;
   days_tracked: number;
 }
 

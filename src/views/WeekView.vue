@@ -15,7 +15,7 @@ import { useWeekData } from "@/composables/useWeekData";
 
 ChartJS.register(Title, Tooltip, Legend, BarElement, CategoryScale, LinearScale);
 
-const { weekSummary, loadWeekSummary, formatTime, startPolling } = useWeekData();
+const { weekSummary, formatTime, startPolling } = useWeekData();
 
 onMounted(() => {
   startPolling();

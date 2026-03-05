@@ -25,10 +25,15 @@ serde_json = "1"
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 windows = { version = "0.58", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_FileSystem",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
     "Win32_System_SystemInformation",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_System_Threading",
     "Win32_Security"
 ] }
 chrono = "0.4.44"
+base64 = "0.22.1"
+image = { version = "0.25.5", default-features = false, features = ["png"] }

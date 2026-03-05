@@ -5220,7 +5220,9 @@ dependencies = [
 name = "worka"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
+ "image",
  "rusqlite",
  "serde",
  "serde_json",

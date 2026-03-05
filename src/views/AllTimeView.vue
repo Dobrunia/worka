@@ -10,6 +10,7 @@ import {
   BarElement,
   CategoryScale,
   LinearScale,
+  type Plugin,
 } from "chart.js";
 import KpiCard from "@/components/ui/KpiCard.vue";
 import TopAppsList from "@/components/ui/TopAppsList.vue";
@@ -20,6 +21,72 @@ ChartJS.register(Title, Tooltip, Legend, BarElement, CategoryScale, LinearScale)
 const { allTimeSummary, formatTime, startPolling } = useAllTimeData();
 
 onMounted(() => startPolling());
+
+const iconCache = new Map<string, HTMLImageElement>();
+
+function getCachedIcon(src: string): HTMLImageElement {
+  const cached = iconCache.get(src);
+  if (cached) return cached;
+
+  const image = new Image();
+  image.src = src;
+  iconCache.set(src, image);
+  return image;
+}
+
+const appIconAxisPlugin: Plugin<"bar"> = {
+  id: "app-icon-axis-plugin",
+  afterDraw(chart) {
+    const labels = chart.data.labels as string[] | undefined;
+    const firstDataset = chart.data.datasets[0] as
+      | { appIcons?: Array<string | null | undefined> }
+      | undefined;
+    const appIcons = firstDataset?.appIcons;
+    const xScale = chart.scales.x;
+    const yScale = chart.scales.y;
+
+    if (!labels || !appIcons || !xScale || !yScale) return;
+
+    const ctx = chart.ctx;
+    const iconSize = 16;
+    const yOffset = yScale.bottom + 8;
+
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.font = "11px Segoe UI, sans-serif";
+    ctx.fillStyle = "#64748b";
+
+    appIcons.forEach((iconDataUrl, index) => {
+      const x = xScale.getPixelForTick(index);
+      if (x < xScale.left || x > xScale.right) return;
+
+      if (iconDataUrl) {
+        const image = getCachedIcon(iconDataUrl);
+        if (image.complete && image.naturalWidth > 0) {
+          ctx.drawImage(
+            image,
+            x - iconSize / 2,
+            yOffset,
+            iconSize,
+            iconSize
+          );
+          return;
+        }
+        image.onload = () => chart.draw();
+      }
+
+      const fallbackLabel = labels[index] ?? "";
+      const shortLabel =
+        fallbackLabel.length > 8
+          ? `${fallbackLabel.slice(0, 8)}…`
+          : fallbackLabel;
+      ctx.fillText(shortLabel, x, yOffset);
+    });
+
+    ctx.restore();
+  },
+};
 
 const topApps = computed(() =>
   allTimeSummary.value.top_apps.map((a) => ({
@@ -35,14 +102,17 @@ const hasData = computed(
     allTimeSummary.value.idle_time_seconds > 0
 );
 
+const topAppsForChart = computed(() => allTimeSummary.value.top_apps.slice(0, 7));
+
 const appsChartData = computed(() => ({
-  labels: allTimeSummary.value.top_apps.slice(0, 7).map((a) => a.name),
+  labels: topAppsForChart.value.map((a) => a.name),
   datasets: [
     {
       label: "Время",
-      data: allTimeSummary.value.top_apps.slice(0, 7).map((a) =>
+      data: topAppsForChart.value.map((a) =>
         Math.round(a.time_seconds / 3600 * 10) / 10
       ),
+      appIcons: topAppsForChart.value.map((a) => a.icon_data_url ?? null),
       backgroundColor: "#3b82f6",
       borderRadius: 4,
     },
@@ -56,11 +126,21 @@ const appsChartOptions = {
     legend: { display: false },
     tooltip: {
       callbacks: {
-        label: (ctx: any) => `${ctx.raw} ч.`,
+        label: (ctx: any) => `${ctx.label}: ${ctx.raw} ч.`,
       },
     },
   },
+  layout: {
+    padding: {
+      bottom: 26,
+    },
+  },
   scales: {
+    x: {
+      ticks: {
+        display: false,
+      },
+    },
     y: {
       beginAtZero: true,
       title: { display: true, text: "Часы" },
@@ -144,6 +224,7 @@ const pieOptions = {
               v-if="appsChartData.labels.length > 0"
               :data="appsChartData"
               :options="appsChartOptions"
+              :plugins="[appIconAxisPlugin]"
             />
             <p v-else class="dbru-text-sm dbru-text-muted">Нет данных</p>
           </div>
