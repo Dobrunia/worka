@@ -91,6 +91,7 @@ const appIconAxisPlugin: Plugin<"bar"> = {
 const topApps = computed(() =>
   allTimeSummary.value.top_apps.map((a) => ({
     name: a.name,
+    iconDataUrl: a.icon_data_url ?? null,
     timeSeconds: a.time_seconds,
     percentage: a.percentage,
   }))
@@ -101,6 +102,27 @@ const hasData = computed(
     allTimeSummary.value.active_time_seconds > 0 ||
     allTimeSummary.value.idle_time_seconds > 0
 );
+
+const totalTrackedSeconds = computed(
+  () =>
+    allTimeSummary.value.active_time_seconds +
+    allTimeSummary.value.idle_time_seconds
+);
+
+const activeSharePercent = computed(() => {
+  if (totalTrackedSeconds.value <= 0) return 0;
+  return Math.round(
+    (allTimeSummary.value.active_time_seconds / totalTrackedSeconds.value) * 100
+  );
+});
+
+const avgActivePerDay = computed(() => {
+  if (allTimeSummary.value.days_tracked <= 0) return "0м";
+  const perDay = Math.round(
+    allTimeSummary.value.active_time_seconds / allTimeSummary.value.days_tracked
+  );
+  return formatTime(perDay);
+});
 
 const topAppsForChart = computed(() => allTimeSummary.value.top_apps.slice(0, 7));
 
@@ -148,37 +170,6 @@ const appsChartOptions = {
   },
 };
 
-const timeDistributionData = computed(() => ({
-  labels: ["Активное", "Простой"],
-  datasets: [
-    {
-      data: [
-        allTimeSummary.value.active_time_seconds,
-        allTimeSummary.value.idle_time_seconds,
-      ],
-      backgroundColor: ["#22c55e", "#f59e0b"],
-    },
-  ],
-}));
-
-const pieOptions = {
-  responsive: true,
-  maintainAspectRatio: false,
-  plugins: {
-    legend: { position: "bottom" as const },
-    tooltip: {
-      callbacks: {
-        label: (ctx: any) => {
-          const total =
-            allTimeSummary.value.active_time_seconds +
-            allTimeSummary.value.idle_time_seconds;
-          const pct = total > 0 ? Math.round((ctx.raw / total) * 100) : 0;
-          return `${ctx.label}: ${pct}%`;
-        },
-      },
-    },
-  },
-};
 </script>
 
 <template>
@@ -214,35 +205,29 @@ const pieOptions = {
         />
       </div>
 
-      <div class="charts-row">
-        <DbrCard class="chart-card">
-          <h3 class="chart-title dbru-text-sm dbru-text-main">
-            Топ приложений
-          </h3>
-          <div class="chart-container">
-            <Bar
-              v-if="appsChartData.labels.length > 0"
-              :data="appsChartData"
-              :options="appsChartOptions"
-              :plugins="[appIconAxisPlugin]"
-            />
-            <p v-else class="dbru-text-sm dbru-text-muted">Нет данных</p>
-          </div>
-        </DbrCard>
+      <DbrCard class="chart-card">
+        <h3 class="chart-title dbru-text-sm dbru-text-main">
+          Топ приложений
+        </h3>
+        <div class="chart-container">
+          <Bar
+            v-if="appsChartData.labels.length > 0"
+            :data="appsChartData"
+            :options="appsChartOptions"
+            :plugins="[appIconAxisPlugin]"
+          />
+          <p v-else class="dbru-text-sm dbru-text-muted">Нет данных</p>
+        </div>
+      </DbrCard>
 
-        <DbrCard class="chart-card">
-          <h3 class="chart-title dbru-text-sm dbru-text-main">
-            Активность / Простой
-          </h3>
-          <div class="chart-container">
-            <Bar
-              :data="timeDistributionData"
-              :options="{
-                ...pieOptions,
-                indexAxis: 'y' as const,
-              }"
-            />
-          </div>
+      <div class="insights-row">
+        <DbrCard class="insight-card">
+          <span class="dbru-text-xs dbru-text-muted">Доля активного времени</span>
+          <span class="dbru-text-lg dbru-text-main">{{ activeSharePercent }}%</span>
+        </DbrCard>
+        <DbrCard class="insight-card">
+          <span class="dbru-text-xs dbru-text-muted">Среднее активное в день</span>
+          <span class="dbru-text-lg dbru-text-main">{{ avgActivePerDay }}</span>
         </DbrCard>
       </div>
 
@@ -278,14 +263,25 @@ const pieOptions = {
   gap: var(--dbru-space-4);
 }
 
-.charts-row {
+.insights-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, 1fr);
   gap: var(--dbru-space-4);
 }
 
 .chart-card {
   padding: var(--dbru-space-4) var(--dbru-space-5);
+}
+
+.insight-card {
+  padding: var(--dbru-space-3) var(--dbru-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--dbru-space-1);
+}
+
+.insight-card span:last-child {
+  font-weight: var(--dbru-font-weight-semibold);
 }
 
 .chart-title {
@@ -315,7 +311,7 @@ const pieOptions = {
     grid-template-columns: repeat(3, 1fr);
   }
 
-  .charts-row {
+  .insights-row {
     grid-template-columns: 1fr;
   }
 }

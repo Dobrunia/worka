@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import { ref } from "vue";
 import { formatTime } from "@/utils/time";
 
 export interface AppUsage {
   name: string;
+  iconDataUrl?: string | null;
   timeSeconds: number;
   percentage: number;
 }
@@ -10,6 +12,16 @@ export interface AppUsage {
 defineProps<{
   apps?: AppUsage[];
 }>();
+
+const failedIcons = ref<Record<string, boolean>>({});
+
+function markIconFailed(appName: string) {
+  failedIcons.value[appName] = true;
+}
+
+function shouldShowIcon(app: AppUsage): boolean {
+  return Boolean(app.iconDataUrl) && !failedIcons.value[app.name];
+}
 </script>
 
 <template>
@@ -23,7 +35,22 @@ defineProps<{
     <div v-else class="apps-container">
       <div v-for="app in apps" :key="app.name" class="app-item">
         <div class="app-info">
-          <span class="app-name dbru-text-sm dbru-text-main">{{ app.name }}</span>
+          <div class="app-identity">
+            <div
+              v-if="shouldShowIcon(app)"
+              class="app-icon-wrap"
+              :title="app.name"
+              :aria-label="app.name"
+            >
+              <img
+                :src="app.iconDataUrl ?? undefined"
+                :alt="app.name"
+                class="app-icon"
+                @error="markIconFailed(app.name)"
+              />
+            </div>
+            <span v-else class="app-name dbru-text-sm dbru-text-main">{{ app.name }}</span>
+          </div>
           <span class="dbru-text-xs dbru-text-muted">{{ formatTime(app.timeSeconds) }}</span>
         </div>
         <div class="progress-bar">
@@ -67,7 +94,30 @@ defineProps<{
 .app-info {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
+}
+
+.app-identity {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.app-icon-wrap {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--dbru-color-border);
+  background: var(--dbru-color-surface-secondary);
+}
+
+.app-icon {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
 }
 
 .app-name {

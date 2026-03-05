@@ -1,4 +1,4 @@
-use crate::db::{build_all_time_summary, build_today_summary, build_week_summary};
+use crate::db::{build_all_time_summary, build_timeline, build_today_summary, build_week_summary};
 use crate::state::{AppDb, AppState};
 use std::sync::Mutex;
 
@@ -88,8 +88,18 @@ pub fn get_all_time_summary(
 }
 
 #[tauri::command]
-pub fn get_timeline(_date: String) -> serde_json::Value {
-    serde_json::json!({ "segments": [] })
+pub fn get_timeline(
+    db: tauri::State<AppDb>,
+    state: tauri::State<Mutex<AppState>>,
+    date: String,
+) -> Result<serde_json::Value, String> {
+    let interval = {
+        let s = state.inner().lock().unwrap();
+        s.sample_interval_seconds as i64
+    };
+
+    let conn = db.0.lock().unwrap();
+    build_timeline(&conn, interval, &date)
 }
 
 #[tauri::command]

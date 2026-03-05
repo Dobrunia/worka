@@ -68,50 +68,6 @@ const activityChartOptions = {
   },
 };
 
-const inputChartData = computed(() => ({
-  labels: weekSummary.value.days.map((d) => d.day_name),
-  datasets: [
-    {
-      label: "Нажатия клавиш",
-      data: weekSummary.value.days.map((d) =>
-        Math.round(d.keyboard_presses / 1000)
-      ),
-      backgroundColor: "#3b82f6",
-      borderRadius: 4,
-    },
-    {
-      label: "Клики мыши",
-      data: weekSummary.value.days.map((d) =>
-        Math.round(d.mouse_clicks / 100)
-      ),
-      backgroundColor: "#8b5cf6",
-      borderRadius: 4,
-    },
-  ],
-}));
-
-const inputChartOptions = {
-  responsive: true,
-  maintainAspectRatio: false,
-  plugins: {
-    legend: { position: "bottom" as const },
-    tooltip: {
-      callbacks: {
-        label: (ctx: any) => {
-          const label = ctx.dataset.label;
-          const val = ctx.raw;
-          return label.includes("клавиш") ? `${label}: ${val}K` : `${label}: ${val * 100}`;
-        },
-      },
-    },
-  },
-  scales: {
-    y: {
-      beginAtZero: true,
-    },
-  },
-};
-
 const totalActiveTime = computed(() =>
   weekSummary.value.days.reduce((sum, d) => sum + d.active_time_seconds, 0)
 );
@@ -123,6 +79,20 @@ const totalKeyboard = computed(() =>
 const totalMouse = computed(() =>
   weekSummary.value.days.reduce((sum, d) => sum + d.mouse_clicks, 0)
 );
+
+const dailyBreakdown = computed(() =>
+  [...weekSummary.value.days]
+    .map((day) => {
+      const total = day.active_time_seconds + day.idle_time_seconds;
+      return {
+        ...day,
+        focus_percent: total > 0 ? Math.round((day.active_time_seconds / total) * 100) : 0,
+      };
+    })
+    .sort((a, b) => b.active_time_seconds - a.active_time_seconds)
+);
+
+const bestDay = computed(() => dailyBreakdown.value[0] ?? null);
 </script>
 
 <template>
@@ -154,12 +124,24 @@ const totalMouse = computed(() =>
         </div>
       </DbrCard>
 
-      <DbrCard class="chart-card">
+      <DbrCard class="insights-card">
         <h3 class="chart-title dbru-text-sm dbru-text-main">
-          Ввод по дням недели
+          Ключевые дни
         </h3>
-        <div class="chart-container">
-          <Bar :data="inputChartData" :options="inputChartOptions" />
+        <p v-if="bestDay" class="dbru-text-sm dbru-text-main best-day">
+          Лучший день: <strong>{{ bestDay.day_name }}</strong> ·
+          {{ formatTime(bestDay.active_time_seconds) }} активного времени
+        </p>
+        <div class="day-list">
+          <div
+            v-for="day in dailyBreakdown"
+            :key="day.date"
+            class="day-row"
+          >
+            <span class="dbru-text-sm dbru-text-main">{{ day.day_name }}</span>
+            <span class="dbru-text-xs dbru-text-muted">{{ day.focus_percent }}% фокуса</span>
+            <span class="dbru-text-xs dbru-text-muted">{{ formatTime(day.active_time_seconds) }}</span>
+          </div>
         </div>
       </DbrCard>
     </template>
@@ -206,6 +188,13 @@ const totalMouse = computed(() =>
   padding: var(--dbru-space-4) var(--dbru-space-5);
 }
 
+.insights-card {
+  padding: var(--dbru-space-4) var(--dbru-space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--dbru-space-3);
+}
+
 .chart-title {
   margin: 0 0 var(--dbru-space-3) 0;
   font-weight: var(--dbru-font-weight-medium);
@@ -213,6 +202,26 @@ const totalMouse = computed(() =>
 
 .chart-container {
   height: 250px;
+}
+
+.best-day {
+  margin: 0;
+}
+
+.day-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dbru-space-2);
+}
+
+.day-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--dbru-space-2);
+  border: 1px solid var(--dbru-color-border);
+  border-radius: var(--dbru-radius-sm);
+  padding: var(--dbru-space-2) var(--dbru-space-3);
 }
 
 .empty-card {

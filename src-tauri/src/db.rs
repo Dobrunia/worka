@@ -362,6 +362,177 @@ pub fn build_all_time_summary(conn: &Connection, interval: i64) -> Result<serde_
     }))
 }
 
+pub fn build_timeline(
+    conn: &Connection,
+    interval: i64,
+    date: &str,
+) -> Result<serde_json::Value, String> {
+    let selected_date = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map_err(|_| format!("Invalid date '{date}'. Expected format: YYYY-MM-DD"))?;
+
+    let start_ts = selected_date
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_utc()
+        .timestamp();
+    let end_ts = selected_date
+        .and_hms_opt(23, 59, 59)
+        .unwrap()
+        .and_utc()
+        .timestamp();
+
+    let mut hourly_activity = vec![(0i64, 0i64); 24];
+    let mut hourly_input = vec![(0i64, 0i64); 24];
+    let mut hourly_apps: Vec<Vec<(String, Option<String>, i64)>> = vec![Vec::new(); 24];
+
+    {
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT
+                   CAST((timestamp - ?1) / 3600 AS INTEGER) as hour_idx,
+                   COALESCE(SUM(CASE WHEN is_idle = 0 THEN 1 ELSE 0 END), 0) * ?3,
+                   COALESCE(SUM(CASE WHEN is_idle = 1 THEN 1 ELSE 0 END), 0) * ?3
+                 FROM activity_sample
+                 WHERE timestamp >= ?1 AND timestamp <= ?2
+                 GROUP BY CAST((timestamp - ?1) / 3600 AS INTEGER)",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let rows = stmt
+            .query_map(params![start_ts, end_ts, interval], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+
+        for row in rows.flatten() {
+            let (hour_idx, active, idle) = row;
+            if (0..24).contains(&hour_idx) {
+                hourly_activity[hour_idx as usize] = (active, idle);
+            }
+        }
+    }
+
+    {
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT
+                   CAST((timestamp_bucket - ?1) / 3600 AS INTEGER) as hour_idx,
+                   COALESCE(SUM(keyboard_presses), 0),
+                   COALESCE(SUM(mouse_clicks), 0)
+                 FROM input_sample
+                 WHERE timestamp_bucket >= ?1 AND timestamp_bucket <= ?2
+                 GROUP BY CAST((timestamp_bucket - ?1) / 3600 AS INTEGER)",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let rows = stmt
+            .query_map(params![start_ts, end_ts], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+
+        for row in rows.flatten() {
+            let (hour_idx, keyboard, mouse) = row;
+            if (0..24).contains(&hour_idx) {
+                hourly_input[hour_idx as usize] = (keyboard, mouse);
+            }
+        }
+    }
+
+    {
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT
+                   CAST((s.timestamp - ?1) / 3600 AS INTEGER) as hour_idx,
+                   a.display_name,
+                   a.icon_data_url,
+                   COUNT(*) * ?3 as seconds
+                 FROM activity_sample s
+                 JOIN app a ON s.app_id = a.id
+                 WHERE s.timestamp >= ?1 AND s.timestamp <= ?2 AND s.is_idle = 0
+                 GROUP BY CAST((s.timestamp - ?1) / 3600 AS INTEGER), s.app_id
+                 ORDER BY hour_idx ASC, seconds DESC",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let rows = stmt
+            .query_map(params![start_ts, end_ts, interval], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+
+        for row in rows.flatten() {
+            let (hour_idx, name, icon_data_url, seconds) = row;
+            if (0..24).contains(&hour_idx) {
+                hourly_apps[hour_idx as usize].push((name, icon_data_url, seconds));
+            }
+        }
+    }
+
+    let mut has_data = false;
+    let hours = (0..24)
+        .map(|hour_idx| {
+            let (active, idle) = hourly_activity[hour_idx];
+            let (keyboard, mouse) = hourly_input[hour_idx];
+            let total_active = active.max(1);
+            let apps_for_hour = &hourly_apps[hour_idx];
+            let top_app = apps_for_hour.first().map(|(name, icon_data_url, seconds)| {
+                serde_json::json!({
+                    "name": name,
+                    "icon_data_url": icon_data_url,
+                    "time_seconds": seconds,
+                })
+            });
+
+            if active > 0 || idle > 0 || keyboard > 0 || mouse > 0 {
+                has_data = true;
+            }
+
+            let apps = apps_for_hour
+                .iter()
+                .map(|(name, icon_data_url, seconds)| {
+                    serde_json::json!({
+                        "name": name,
+                        "icon_data_url": icon_data_url,
+                        "time_seconds": seconds,
+                        "percentage": ((*seconds * 100) / total_active),
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            serde_json::json!({
+                "hour": format!("{hour_idx:02}:00"),
+                "hour_index": hour_idx,
+                "active_time_seconds": active,
+                "idle_time_seconds": idle,
+                "keyboard_presses": keyboard,
+                "mouse_clicks": mouse,
+                "top_app": top_app,
+                "apps": apps,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(serde_json::json!({
+        "date": selected_date.format("%Y-%m-%d").to_string(),
+        "hours": hours,
+        "has_data": has_data,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,9 +618,49 @@ mod tests {
                  FROM input_sample WHERE timestamp_bucket >= ?1",
                 params![ts - 1],
                 |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
+        )
+        .unwrap();
         assert_eq!(kbd, 42);
         assert_eq!(clicks, 17);
+    }
+
+    #[test]
+    fn should_build_timeline_returns_24_hours() {
+        let conn = init_db(":memory:").unwrap();
+
+        conn.execute(
+            "INSERT INTO app (exe_path, display_name, icon_data_url)
+             VALUES ('demo.exe', 'Demo', NULL)",
+            [],
+        )
+        .unwrap();
+        let app_id = conn.last_insert_rowid();
+
+        let date = chrono::Utc::now().date_naive();
+        let day_start = date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
+
+        conn.execute(
+            "INSERT INTO activity_sample (timestamp, app_id, is_idle, window_title)
+             VALUES (?1, ?2, 0, NULL)",
+            params![day_start + 90, app_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO input_sample
+             (timestamp_bucket, keyboard_presses, mouse_clicks, mouse_wheel)
+             VALUES (?1, 7, 3, 0)",
+            params![day_start + 120],
+        )
+        .unwrap();
+
+        let timeline = build_timeline(&conn, 10, &date.format("%Y-%m-%d").to_string())
+            .unwrap();
+        let hours = timeline
+            .get("hours")
+            .and_then(|v| v.as_array())
+            .unwrap();
+
+        assert_eq!(hours.len(), 24);
+        assert_eq!(timeline.get("has_data").and_then(|v| v.as_bool()), Some(true));
     }
 }

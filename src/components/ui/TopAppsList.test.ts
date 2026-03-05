@@ -3,6 +3,9 @@ import { render, screen } from "@testing-library/vue";
 import TopAppsList, { type AppUsage } from "@/components/ui/TopAppsList.vue";
 
 describe("TopAppsList", () => {
+  const ICON_DATA_URL =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wf6nfsAAAAASUVORK5CYII=";
+
   it("should show empty state when no apps provided", () => {
     render(TopAppsList, {
       props: { apps: [] },
@@ -45,6 +48,19 @@ describe("TopAppsList", () => {
     expect(screen.getByText("1ч 1м")).toBeInTheDocument();
   });
 
+  it("should prefer icon rendering and keep app name in tooltip", () => {
+    const apps: AppUsage[] = [
+      { name: "VS Code", iconDataUrl: ICON_DATA_URL, timeSeconds: 3600, percentage: 100 },
+    ];
+
+    render(TopAppsList, {
+      props: { apps },
+    });
+
+    expect(screen.getByAltText("VS Code")).toBeInTheDocument();
+    expect(screen.queryByText("VS Code")).not.toBeInTheDocument();
+  });
+
   it("should format time correctly for minutes only", () => {
     const apps: AppUsage[] = [
       { name: "App", timeSeconds: 300, percentage: 100 },
@@ -66,9 +82,8 @@ describe("TopAppsList", () => {
       props: { apps },
     });
 
-    const progressBar = screen.getByText("App")
-      .parentElement?.nextElementSibling?.firstElementChild as HTMLElement;
-    expect(progressBar).toHaveStyle("width: 75%");
+    const progressFill = document.querySelector(".progress-fill") as HTMLElement;
+    expect(progressFill).toHaveStyle("width: 75%");
   });
 
   it("should display list title", () => {
